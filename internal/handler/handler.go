@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"go.uber.org/zap"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,17 +16,31 @@ import (
 
 type MetricsServer struct {
 	storage storage.Storage
+	logger  *zap.Logger
 }
 
-func NewMetricsServer(s storage.Storage) *MetricsServer {
-	return &MetricsServer{storage: s}
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+	size       int
+}
+
+func NewMetricsServer(s storage.Storage, logger *zap.Logger) *MetricsServer {
+	return &MetricsServer{
+		storage: s,
+		logger:  logger,
+	}
 }
 
 func (s *MetricsServer) Routes() chi.Router {
 	r := chi.NewRouter()
+
+	r.Use(LoggingMiddleware(s.logger))
+
 	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
 	r.Get("/value/{type}/{name}", s.GetValueHandler)
 	r.Get("/", s.ListHandler)
+
 	return r
 }
 
@@ -132,4 +148,39 @@ func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(b.String()))
+}
+
+func LoggingMiddleware(logger *zap.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+
+			ww := &responseWriter{
+				ResponseWriter: w,
+				statusCode:     http.StatusOK,
+			}
+
+			next.ServeHTTP(ww, r)
+
+			logger.Info(
+				"HTTP request",
+				zap.String("uri", r.RequestURI),
+				zap.String("method", r.Method),
+				zap.Int("status", ww.statusCode),
+				zap.Int("size", ww.size),
+				zap.Duration("duration", time.Since(start)),
+			)
+		})
+	}
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(data []byte) (int, error) {
+	size, err := rw.ResponseWriter.Write(data)
+	rw.size += size
+	return size, err
 }
