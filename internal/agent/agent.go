@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"time"
+	"strings"
 )
 
 const (
@@ -16,32 +17,41 @@ const (
 )
 
 type Agent struct {
-	serverURL string
-	client    *http.Client
-	gauges    map[string]float64
-	counters  map[string]int64
+	serverURL      string
+	client         *http.Client
+	gauges         map[string]float64
+	counters       map[string]int64
+	reportInterval time.Duration
+	pollInterval   time.Duration
 }
 
 func New(serverURL string) *Agent {
-	return &Agent{
-		serverURL: serverURL,
-		client:    &http.Client{},
-		gauges:    make(map[string]float64),
-		counters:  make(map[string]int64),
-	}
+    if !strings.HasPrefix(serverURL, "http://") &&
+        !strings.HasPrefix(serverURL, "https://") {
+        serverURL = "http://" + serverURL
+    }
+
+    return &Agent{
+        serverURL:      serverURL,
+        client:         &http.Client{},
+        gauges:         make(map[string]float64),
+        counters:       make(map[string]int64),
+        reportInterval: ReportInterval,
+        pollInterval:   PollInterval,
+    }
 }
 
 func (a *Agent) Run() {
 	go func() {
 		for {
 			a.Poll()
-			time.Sleep(PollInterval)
+			time.Sleep(a.pollInterval)
 		}
 	}()
 
 	for {
 		a.Report()
-		time.Sleep(ReportInterval)
+		time.Sleep(a.reportInterval)
 	}
 }
 
@@ -95,18 +105,29 @@ func (a *Agent) Report() {
 	}
 }
 
+func (a *Agent) SetReportInterval(interval time.Duration) {
+	a.reportInterval = interval
+}
+
+func (a *Agent) SetPollInterval(interval time.Duration) {
+	a.pollInterval = interval
+}
+
 func (a *Agent) sendMetric(mType, name, value string) {
-	url := fmt.Sprintf("%s/update/%s/%s/%s", a.serverURL, mType, name, value)
+    url := fmt.Sprintf("%s/update/%s/%s/%s", a.serverURL, mType, name, value)
 
-	req, err := http.NewRequest(http.MethodPost, url, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "text/plain")
+    req, err := http.NewRequest(http.MethodPost, url, nil)
+    if err != nil {
+        fmt.Printf("create request error: %v\n", err)
+        return
+    }
 
-	resp, err := a.client.Do(req)
-	if err != nil {
-		return
-	}
-	resp.Body.Close()
+    req.Header.Set("Content-Type", "text/plain")
+
+    resp, err := a.client.Do(req)
+    if err != nil {
+        fmt.Printf("send request error: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
 }

@@ -9,23 +9,23 @@ import (
 
 
 type Storage interface {
-	Update(metric *models.Metrics) error
-	GetMetric(id string, mType string) (*models.Metrics, bool)
-	GetAllMetrics() map[string]*models.Metrics
+	Update(metric *model.Metrics) error
+	GetMetric(id string, mType string) (*model.Metrics, bool)
+	GetAllMetrics() map[string]*model.Metrics
 }
 
 type MemStorage struct {
 	mu      sync.RWMutex
-	metrics map[string]*models.Metrics
+	metrics map[string]*model.Metrics
 }
 
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
-		metrics: make(map[string]*models.Metrics),
+		metrics: make(map[string]*model.Metrics),
 	}
 }
 
-func (s *MemStorage) Update(metric *models.Metrics) error {
+func (s *MemStorage) Update(metric *model.Metrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,7 +51,7 @@ func (s *MemStorage) Update(metric *models.Metrics) error {
 	return nil
 }
 
-func (s *MemStorage) GetMetric(id string, mType string) (*models.Metrics, bool) {
+func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -60,11 +60,11 @@ func (s *MemStorage) GetMetric(id string, mType string) (*models.Metrics, bool) 
 	return metric, ok
 }
 
-func (s *MemStorage) GetAllMetrics() map[string]*models.Metrics {
+func (s *MemStorage) GetAllMetrics() map[string]*model.Metrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make(map[string]*models.Metrics, len(s.metrics))
+	result := make(map[string]*model.Metrics, len(s.metrics))
 	for k, v := range s.metrics {
 		result[k] = v
 	}

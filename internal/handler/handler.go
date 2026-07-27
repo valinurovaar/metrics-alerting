@@ -43,7 +43,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metric := &models.Metrics{
+	metric := &model.Metrics{
 		ID:    metricID,
 		MType: metricType,
 	}

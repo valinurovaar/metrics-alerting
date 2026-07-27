@@ -114,7 +114,7 @@ func TestGetValueHandler_GaugeSuccess(t *testing.T) {
 	server := setupTestServer(stor)
 
 	value := 42.5
-	stor.Update(&models.Metrics{ID: "TestGauge", MType: "gauge", Value: &value})
+	stor.Update(&model.Metrics{ID: "TestGauge", MType: "gauge", Value: &value})
 
 	req := httptest.NewRequest(http.MethodGet, "/value/gauge/TestGauge", nil)
 	w := httptest.NewRecorder()
@@ -136,7 +136,7 @@ func TestGetValueHandler_CounterSuccess(t *testing.T) {
 	server := setupTestServer(stor)
 
 	delta := int64(100)
-	stor.Update(&models.Metrics{ID: "TestCounter", MType: "counter", Delta: &delta})
+	stor.Update(&model.Metrics{ID: "TestCounter", MType: "counter", Delta: &delta})
 
 	req := httptest.NewRequest(http.MethodGet, "/value/counter/TestCounter", nil)
 	w := httptest.NewRecorder()
@@ -187,8 +187,8 @@ func TestListHandler_Success(t *testing.T) {
 
 	gaugeVal := 10.5
 	counterDelta := int64(7)
-	stor.Update(&models.Metrics{ID: "MyGauge", MType: "gauge", Value: &gaugeVal})
-	stor.Update(&models.Metrics{ID: "MyCounter", MType: "counter", Delta: &counterDelta})
+	stor.Update(&model.Metrics{ID: "MyGauge", MType: "gauge", Value: &gaugeVal})
+	stor.Update(&model.Metrics{ID: "MyCounter", MType: "counter", Delta: &counterDelta})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
