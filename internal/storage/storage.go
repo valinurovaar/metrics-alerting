@@ -11,6 +11,7 @@ import (
 type Storage interface {
 	Update(metric *models.Metrics) error
 	GetMetric(id string, mType string) (*models.Metrics, bool)
+	GetAllMetrics() map[string]*models.Metrics
 }
 
 type MemStorage struct {

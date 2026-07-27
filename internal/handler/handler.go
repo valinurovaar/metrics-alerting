@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"metrics-alerting/internal/storage"
+	"github.com/go-chi/chi/v5"
+
 	"metrics-alerting/internal/model"
+	"metrics-alerting/internal/storage"
 )
 
 type MetricsServer struct {
@@ -17,26 +20,18 @@ func NewMetricsServer(s storage.Storage) *MetricsServer {
 	return &MetricsServer{storage: s}
 }
 
+func (s *MetricsServer) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
+	r.Get("/value/{type}/{name}", s.GetValueHandler)
+	r.Get("/", s.ListHandler)
+	return r
+}
+
 func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	path := strings.TrimPrefix(r.URL.Path, "/update/")
-
-	path = strings.TrimRight(path, "/")
-	
-	parts := strings.Split(path, "/")
-
-	if len(parts) != 3 {
-		http.Error(w, "Metric name and value are required", http.StatusNotFound)
-		return
-	}
-
-	metricType := parts[0]
-	metricID := parts[1]
-	metricValueStr := parts[2]
+	metricType := chi.URLParam(r, "type")
+	metricID := chi.URLParam(r, "name")
+	metricValueStr := chi.URLParam(r, "value")
 
 	if metricID == "" {
 		http.Error(w, "Metric name is required", http.StatusNotFound)
@@ -74,6 +69,67 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK\n"))
+}
+
+func (s *MetricsServer) GetValueHandler(w http.ResponseWriter, r *http.Request) {
+	metricType := chi.URLParam(r, "type")
+	metricID := chi.URLParam(r, "name")
+
+	if metricType != "gauge" && metricType != "counter" {
+		http.NotFound(w, r)
+		return
+	}
+
+	metric, ok := s.storage.GetMetric(metricID, metricType)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	var valueStr string
+	if metricType == "gauge" {
+		if metric.Value == nil {
+			http.NotFound(w, r)
+			return
+		}
+		valueStr = strconv.FormatFloat(*metric.Value, 'f', -1, 64)
+	} else {
+		if metric.Delta == nil {
+			http.NotFound(w, r)
+			return
+		}
+		valueStr = strconv.FormatInt(*metric.Delta, 10)
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(valueStr))
+}
+
+func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {
+	metrics := s.storage.GetAllMetrics()
+
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html><head><title>Metrics</title></head><body>\n")
+	b.WriteString("<h1>Metrics</h1>\n<table border=\"1\">\n")
+	b.WriteString("<tr><th>Type</th><th>Name</th><th>Value</th></tr>\n")
+
+	for _, m := range metrics {
+		var valueStr string
+		if m.MType == "gauge" && m.Value != nil {
+			valueStr = strconv.FormatFloat(*m.Value, 'f', -1, 64)
+		} else if m.MType == "counter" && m.Delta != nil {
+			valueStr = strconv.FormatInt(*m.Delta, 10)
+		}
+		fmt.Fprintf(&b, "<tr><td>%s</td><td>%s</td><td>%s</td></tr>\n", m.MType, m.ID, valueStr)
+	}
+
+	b.WriteString("</table>\n</body></html>\n")
+
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(b.String()))
 }
