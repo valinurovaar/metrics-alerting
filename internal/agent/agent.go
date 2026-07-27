@@ -13,7 +13,6 @@ import (
 const (
 	PollInterval   = 2 * time.Second
 	ReportInterval = 10 * time.Second
-	DefaultAddress = "http://localhost:8080"
 )
 
 type Agent struct {

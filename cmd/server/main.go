@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 
 	"metrics-alerting/internal/handler"
 	"metrics-alerting/internal/storage"
@@ -12,6 +13,10 @@ import (
 func main() {
 	addr := flag.String("a", "localhost:8080", "HTTP server address")
 	flag.Parse()
+
+	if envAddr := os.Getenv("ADDRESS"); envAddr != "" {
+		*addr = envAddr
+	}
 
 	stor := storage.NewMemStorage()
 	metricsServer := handler.NewMetricsServer(stor)
