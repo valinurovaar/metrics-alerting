@@ -1,8 +1,11 @@
 package storage
 
-import ("sync"
-"fmt"
-"metrics-alerting/internal/model")
+import (
+	"fmt"
+	"sync"
+
+	"metrics-alerting/internal/model"
+)
 
 
 type Storage interface {
