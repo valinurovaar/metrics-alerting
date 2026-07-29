@@ -5,6 +5,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+		"encoding/json"
+	"io"
+
+	"metrics-alerting/internal/model"
 )
 
 func TestPoll_CollectsRuntimeMetrics(t *testing.T) {
@@ -43,26 +47,41 @@ func TestPoll_IncrementsPollCount(t *testing.T) {
 }
 
 func TestReport_SendsMetrics(t *testing.T) {
-	var mu sync.Mutex
-	received := make(map[string]string)
+	var (
+		mu       sync.Mutex
+		received []model.Metrics
+	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("Expected POST, got %s", r.Method)
 		}
-		if ct := r.Header.Get("Content-Type"); ct != "text/plain" {
-			t.Errorf("Expected Content-Type text/plain, got %s", ct)
+
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Expected Content-Type application/json, got %s", ct)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var metric model.Metrics
+		if err := json.Unmarshal(body, &metric); err != nil {
+			t.Fatalf("cannot decode json: %v", err)
 		}
 
 		mu.Lock()
-		received[r.URL.Path] = r.Method
+		received = append(received, metric)
 		mu.Unlock()
 
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	a := New(server.URL)
+
 	a.Poll()
 	a.Report()
 
@@ -70,31 +89,48 @@ func TestReport_SendsMetrics(t *testing.T) {
 	defer mu.Unlock()
 
 	if len(received) == 0 {
-		t.Fatal("Expected metrics to be sent to server")
+		t.Fatal("Expected metrics to be sent")
 	}
 
-	expectedPaths := []string{
-		"/update/gauge/Alloc/",
-		"/update/counter/PollCount/1",
-		"/update/gauge/RandomValue/",
-	}
+	var (
+		hasAlloc     bool
+		hasRandom    bool
+		hasPollCount bool
+	)
 
-	for _, prefix := range expectedPaths {
-		found := false
-		for path := range received {
-			if len(prefix) > 0 && prefix[len(prefix)-1] == '/' {
-				if len(path) > len(prefix)-1 && path[:len(prefix)-1] == prefix[:len(prefix)-1] {
-					found = true
-					break
-				}
-			} else if path == prefix {
-				found = true
-				break
+	for _, metric := range received {
+		switch metric.ID {
+
+		case "Alloc":
+			if metric.MType != "gauge" || metric.Value == nil {
+				t.Errorf("Alloc metric is invalid: %+v", metric)
 			}
+			hasAlloc = true
+
+		case "RandomValue":
+			if metric.MType != "gauge" || metric.Value == nil {
+				t.Errorf("RandomValue metric is invalid: %+v", metric)
+			}
+			hasRandom = true
+
+		case "PollCount":
+			if metric.MType != "counter" || metric.Delta == nil || *metric.Delta != 1 {
+				t.Errorf("PollCount metric is invalid: %+v", metric)
+			}
+			hasPollCount = true
 		}
-		if !found {
-			t.Errorf("Expected request matching %q, received paths: %v", prefix, received)
-		}
+	}
+
+	if !hasAlloc {
+		t.Error("Alloc metric was not sent")
+	}
+
+	if !hasRandom {
+		t.Error("RandomValue metric was not sent")
+	}
+
+	if !hasPollCount {
+		t.Error("PollCount metric was not sent")
 	}
 }
 

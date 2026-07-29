@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,7 +39,15 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Use(LoggingMiddleware(s.logger))
 
 	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
+
+	r.Post("/update", s.UpdateJSONHandler)
+	r.Post("/update/", s.UpdateJSONHandler)
+
 	r.Get("/value/{type}/{name}", s.GetValueHandler)
+
+	r.Post("/value", s.PostValueJSONHandler)
+	r.Post("/value/", s.PostValueJSONHandler)
+
 	r.Get("/", s.ListHandler)
 
 	return r
@@ -90,6 +99,46 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
+func (s *MetricsServer) UpdateJSONHandler(w http.ResponseWriter, r *http.Request) {
+	var metric model.Metrics
+
+	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if metric.ID == "" {
+		http.Error(w, "metric id is required", http.StatusNotFound)
+		return
+	}
+
+	if metric.MType != "gauge" && metric.MType != "counter" {
+		http.Error(w, "invalid metric type", http.StatusBadRequest)
+		return
+	}
+
+	if metric.MType == "gauge" && metric.Value == nil {
+		http.Error(w, "metric value is required", http.StatusBadRequest)
+		return
+	}
+
+	if metric.MType == "counter" && metric.Delta == nil {
+		http.Error(w, "metric delta is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.storage.Update(&metric); err != nil {
+		http.Error(w, "failed to update metric", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func (s *MetricsServer) GetValueHandler(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricID := chi.URLParam(r, "name")
@@ -123,6 +172,37 @@ func (s *MetricsServer) GetValueHandler(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(valueStr))
+}
+
+func (s *MetricsServer) PostValueJSONHandler(w http.ResponseWriter, r *http.Request) {
+	var req model.Metrics
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID == "" {
+		http.Error(w, "metric id is required", http.StatusNotFound)
+		return
+	}
+
+	if req.MType != "gauge" && req.MType != "counter" {
+		http.Error(w, "invalid metric type", http.StatusBadRequest)
+		return
+	}
+
+	metric, ok := s.storage.GetMetric(req.ID, req.MType)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {

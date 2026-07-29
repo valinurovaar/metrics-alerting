@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"runtime"
-	"strconv"
-	"time"
 	"strings"
+	"time"
+
+	"metrics-alerting/internal/model"
 )
 
 const (
@@ -25,19 +28,19 @@ type Agent struct {
 }
 
 func New(serverURL string) *Agent {
-    if !strings.HasPrefix(serverURL, "http://") &&
-        !strings.HasPrefix(serverURL, "https://") {
-        serverURL = "http://" + serverURL
-    }
+	if !strings.HasPrefix(serverURL, "http://") &&
+		!strings.HasPrefix(serverURL, "https://") {
+		serverURL = "http://" + serverURL
+	}
 
-    return &Agent{
-        serverURL:      serverURL,
-        client:         &http.Client{},
-        gauges:         make(map[string]float64),
-        counters:       make(map[string]int64),
-        reportInterval: ReportInterval,
-        pollInterval:   PollInterval,
-    }
+	return &Agent{
+		serverURL:      serverURL,
+		client:         &http.Client{},
+		gauges:         make(map[string]float64),
+		counters:       make(map[string]int64),
+		reportInterval: ReportInterval,
+		pollInterval:   PollInterval,
+	}
 }
 
 func (a *Agent) Run() {
@@ -92,14 +95,28 @@ func (a *Agent) Poll() {
 
 func (a *Agent) Report() {
 	for name, value := range a.gauges {
-		a.sendMetric("gauge", name, strconv.FormatFloat(value, 'f', -1, 64))
+		v := value
+
+		a.sendMetric(model.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &v,
+		})
 	}
 
 	for name, value := range a.counters {
 		if value == 0 {
 			continue
 		}
-		a.sendMetric("counter", name, strconv.FormatInt(value, 10))
+
+		v := value
+
+		a.sendMetric(model.Metrics{
+			ID:    name,
+			MType: "counter",
+			Delta: &v,
+		})
+
 		a.counters[name] = 0
 	}
 }
@@ -112,21 +129,34 @@ func (a *Agent) SetPollInterval(interval time.Duration) {
 	a.pollInterval = interval
 }
 
-func (a *Agent) sendMetric(mType, name, value string) {
-    url := fmt.Sprintf("%s/update/%s/%s/%s", a.serverURL, mType, name, value)
+func (a *Agent) sendMetric(metric model.Metrics) {
+	body, err := json.Marshal(metric)
+	if err != nil {
+		fmt.Printf("marshal error: %v\n", err)
+		return
+	}
 
-    req, err := http.NewRequest(http.MethodPost, url, nil)
-    if err != nil {
-        fmt.Printf("create request error: %v\n", err)
-        return
-    }
+	req, err := http.NewRequest(
+		http.MethodPost,
+		a.serverURL+"/update",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		fmt.Printf("create request error: %v\n", err)
+		return
+	}
 
-    req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", "application/json")
 
-    resp, err := a.client.Do(req)
-    if err != nil {
-        fmt.Printf("send request error: %v\n", err)
-        return
-    }
-    defer resp.Body.Close()
+	resp, err := a.client.Do(req)
+	if err != nil {
+		fmt.Printf("send request error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("unexpected status: %d\n", resp.StatusCode)
+		return
+	}
 }
