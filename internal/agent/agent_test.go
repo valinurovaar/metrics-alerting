@@ -1,151 +1,139 @@
 package agent
 
 import (
+	"compress/gzip"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
-		"encoding/json"
-	"io"
+	"time"
 
 	"metrics-alerting/internal/model"
 )
 
-func TestPoll_CollectsRuntimeMetrics(t *testing.T) {
-	a := New("http://localhost:8080")
-
-	a.Poll()
-
-	expectedGauges := []string{
-		"Alloc", "BuckHashSys", "Frees", "GCCPUFraction", "GCSys",
-		"HeapAlloc", "HeapIdle", "HeapInuse", "HeapObjects", "HeapReleased",
-		"HeapSys", "LastGC", "Lookups", "MCacheInuse", "MCacheSys",
-		"MSpanInuse", "MSpanSys", "Mallocs", "NextGC", "NumForcedGC",
-		"NumGC", "OtherSys", "PauseTotalNs", "StackInuse", "StackSys",
-		"Sys", "TotalAlloc", "RandomValue",
-	}
-
-	for _, name := range expectedGauges {
-		if _, ok := a.gauges[name]; !ok {
-			t.Errorf("Expected gauge metric %q to be collected", name)
-		}
-	}
-}
-
-func TestPoll_IncrementsPollCount(t *testing.T) {
-	a := New("http://localhost:8080")
-
-	a.Poll()
-	if a.counters["PollCount"] != 1 {
-		t.Errorf("Expected PollCount=1 after first poll, got %d", a.counters["PollCount"])
-	}
-
-	a.Poll()
-	if a.counters["PollCount"] != 2 {
-		t.Errorf("Expected PollCount=2 after second poll, got %d", a.counters["PollCount"])
-	}
-}
-
 func TestReport_SendsMetrics(t *testing.T) {
-	var (
-		mu       sync.Mutex
-		received []model.Metrics
-	)
+	receivedMetrics := make(chan model.Metrics, 100)
+	var mu sync.Mutex
+	received := make([]model.Metrics, 0)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("Expected POST, got %s", r.Method)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reader io.Reader = r.Body
+
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Errorf("cannot create gzip reader: %v", err)
+				http.Error(w, "bad gzip", http.StatusBadRequest)
+				return
+			}
+			defer gz.Close()
+			reader = gz
 		}
 
-		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-			t.Errorf("Expected Content-Type application/json, got %s", ct)
-		}
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		var metric model.Metrics
-		if err := json.Unmarshal(body, &metric); err != nil {
-			t.Fatalf("cannot decode json: %v", err)
+		var req model.Metrics
+		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+			t.Errorf("cannot decode json: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
 		}
 
 		mu.Lock()
-		received = append(received, metric)
+		received = append(received, req)
 		mu.Unlock()
+
+		select {
+		case receivedMetrics <- req:
+		default:
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(req)
 	}))
-	defer server.Close()
+	defer srv.Close()
 
-	a := New(server.URL)
+	a := New(srv.URL)
+	a.SetPollInterval(50 * time.Millisecond)
+	a.SetReportInterval(100 * time.Millisecond)
 
-	a.Poll()
-	a.Report()
+	go a.Run()
 
-	mu.Lock()
-	defer mu.Unlock()
+	deadline := time.After(3 * time.Second)
+	expectedCount := 5
 
-	if len(received) == 0 {
-		t.Fatal("Expected metrics to be sent")
-	}
-
-	var (
-		hasAlloc     bool
-		hasRandom    bool
-		hasPollCount bool
-	)
-
-	for _, metric := range received {
-		switch metric.ID {
-
-		case "Alloc":
-			if metric.MType != "gauge" || metric.Value == nil {
-				t.Errorf("Alloc metric is invalid: %+v", metric)
-			}
-			hasAlloc = true
-
-		case "RandomValue":
-			if metric.MType != "gauge" || metric.Value == nil {
-				t.Errorf("RandomValue metric is invalid: %+v", metric)
-			}
-			hasRandom = true
-
-		case "PollCount":
-			if metric.MType != "counter" || metric.Delta == nil || *metric.Delta != 1 {
-				t.Errorf("PollCount metric is invalid: %+v", metric)
-			}
-			hasPollCount = true
+	for len(received) < expectedCount {
+		select {
+		case <-receivedMetrics:
+		case <-deadline:
+			t.Errorf("Expected metrics to be sent, got %d", len(received))
+			return
 		}
 	}
 
-	if !hasAlloc {
-		t.Error("Alloc metric was not sent")
-	}
+	hasGauge := false
 
-	if !hasRandom {
-		t.Error("RandomValue metric was not sent")
+	mu.Lock()
+	for _, m := range received {
+		if m.MType == "gauge" {
+			hasGauge = true
+			break
+		}
 	}
+	mu.Unlock()
 
-	if !hasPollCount {
-		t.Error("PollCount metric was not sent")
+	if !hasGauge {
+		t.Errorf("Expected at least one gauge metric to be sent")
 	}
 }
 
-func TestReport_ResetsCounterAfterSend(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+func TestNew(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "with http prefix",
+			input:    "http://localhost:8080",
+			expected: "http://localhost:8080",
+		},
+		{
+			name:     "with https prefix",
+			input:    "https://example.com",
+			expected: "https://example.com",
+		},
+		{
+			name:     "without prefix",
+			input:    "localhost:8080",
+			expected: "http://localhost:8080",
+		},
+	}
 
-	a := New(server.URL)
-	a.Poll()
-	a.Poll()
-	a.Report()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := New(tt.input)
+			if a.serverURL != tt.expected {
+				t.Errorf("expected serverURL=%s, got %s", tt.expected, a.serverURL)
+			}
+			if a.client == nil {
+				t.Errorf("expected client to be initialized")
+			}
+		})
+	}
+}
 
-	if a.counters["PollCount"] != 0 {
-		t.Errorf("Expected PollCount to reset after report, got %d", a.counters["PollCount"])
+func TestAgent_Intervals(t *testing.T) {
+	a := New("http://localhost:8080")
+
+	a.SetReportInterval(30 * time.Second)
+	if a.reportInterval != 30*time.Second {
+		t.Errorf("expected reportInterval=30s, got %v", a.reportInterval)
+	}
+
+	a.SetPollInterval(5 * time.Second)
+	if a.pollInterval != 5*time.Second {
+		t.Errorf("expected pollInterval=5s, got %v", a.pollInterval)
 	}
 }

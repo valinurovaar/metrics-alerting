@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"runtime"
@@ -136,10 +138,25 @@ func (a *Agent) sendMetric(metric model.Metrics) {
 		return
 	}
 
+	var buf bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buf)
+
+	if _, err := gzipWriter.Write(body); err != nil {
+		fmt.Printf("gzip write error: %v\n", err)
+		return
+	}
+
+	if err := gzipWriter.Close(); err != nil {
+		fmt.Printf("gzip close error: %v\n", err)
+		return
+	}
+
+	endpoint := strings.TrimRight(a.serverURL, "/") + "/update"
+
 	req, err := http.NewRequest(
 		http.MethodPost,
-		a.serverURL+"/update",
-		bytes.NewReader(body),
+		endpoint,
+		&buf,
 	)
 	if err != nil {
 		fmt.Printf("create request error: %v\n", err)
@@ -147,6 +164,8 @@ func (a *Agent) sendMetric(metric model.Metrics) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -154,6 +173,18 @@ func (a *Agent) sendMetric(metric model.Metrics) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Encoding")), "gzip") {
+		gzipReader, err := gzip.NewReader(resp.Body)
+		if err == nil {
+			defer gzipReader.Close()
+			_, _ = io.Copy(io.Discard, gzipReader)
+		} else {
+			_, _ = io.Copy(io.Discard, resp.Body)
+		}
+	} else {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("unexpected status: %d\n", resp.StatusCode)
