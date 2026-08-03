@@ -2,6 +2,7 @@ package agent
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -58,16 +59,27 @@ func TestReport_SendsMetrics(t *testing.T) {
 	a.SetPollInterval(50 * time.Millisecond)
 	a.SetReportInterval(100 * time.Millisecond)
 
-	go a.Run()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go a.Run(ctx)
 
 	deadline := time.After(3 * time.Second)
 	expectedCount := 5
 
-	for len(received) < expectedCount {
+	for {
+		mu.Lock()
+		currentCount := len(received)
+		mu.Unlock()
+
+		if currentCount >= expectedCount {
+			break
+		}
+
 		select {
 		case <-receivedMetrics:
 		case <-deadline:
-			t.Errorf("Expected metrics to be sent, got %d", len(received))
+			t.Errorf("Expected metrics to be sent, got %d", currentCount)
 			return
 		}
 	}

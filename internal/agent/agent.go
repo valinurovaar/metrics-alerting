@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,17 +46,31 @@ func New(serverURL string) *Agent {
 	}
 }
 
-func (a *Agent) Run() {
+func (a *Agent) Run(ctx context.Context) {
+	pollTicker := time.NewTicker(a.pollInterval)
+	defer pollTicker.Stop()
+
+	reportTicker := time.NewTicker(a.reportInterval)
+	defer reportTicker.Stop()
+
 	go func() {
 		for {
-			a.Poll()
-			time.Sleep(a.pollInterval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-pollTicker.C:
+				a.Poll()
+			}
 		}
 	}()
 
 	for {
-		a.Report()
-		time.Sleep(a.reportInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-reportTicker.C:
+			a.Report()
+		}
 	}
 }
 

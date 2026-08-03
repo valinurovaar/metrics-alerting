@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"metrics-alerting/internal/agent"
@@ -24,12 +27,16 @@ func main() {
 	if envReport := os.Getenv("REPORT_INTERVAL"); envReport != "" {
 		if value, err := strconv.Atoi(envReport); err == nil {
 			*reportInterval = value
+		} else {
+			log.Printf("Warning: не удалось распарсить переменную окружения REPORT_INTERVAL (%s), используется значение по умолчанию: %d", envReport, *reportInterval)
 		}
 	}
 
 	if envPoll := os.Getenv("POLL_INTERVAL"); envPoll != "" {
 		if value, err := strconv.Atoi(envPoll); err == nil {
 			*pollInterval = value
+		} else {
+			log.Printf("Warning: не удалось распарсить переменную окружения POLL_INTERVAL (%s), используется значение по умолчанию: %d", envPoll, *pollInterval)
 		}
 	}
 
@@ -45,5 +52,17 @@ func main() {
 		*pollInterval,
 	)
 
-	a.Run()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-stop
+		log.Println("Agent: shutting down gracefully...")
+		cancel()
+	}()
+
+	a.Run(ctx)
 }
