@@ -38,7 +38,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if metricType != "gauge" && metricType != "counter" {
+	if metricType != models.Gauge && metricType != models.Counter {
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 		return
 	}
@@ -48,7 +48,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		MType: metricType,
 	}
 
-	if metricType == "gauge" {
+	if metricType == models.Gauge {
 		value, err := strconv.ParseFloat(metricValueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid metric value", http.StatusBadRequest)
