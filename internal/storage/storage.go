@@ -7,7 +7,6 @@ import (
 	"metrics-alerting/internal/model"
 )
 
-
 type Storage interface {
 	Update(metric *model.Metrics) error
 	GetMetric(id string, mType string) (*model.Metrics, bool)
@@ -32,13 +31,13 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 	key := fmt.Sprintf("%s:%s", metric.MType, metric.ID)
 
 	if existing, ok := s.metrics[key]; ok {
-		if metric.MType == "counter" && metric.Delta != nil {
+		if metric.MType == model.Counter && metric.Delta != nil {
 			if existing.Delta == nil {
 				existing.Delta = new(int64)
 			}
 			*existing.Delta += *metric.Delta
 		}
-		if metric.MType == "gauge" && metric.Value != nil {
+		if metric.MType == model.Gauge && metric.Value != nil {
 			existing.Value = metric.Value
 		}
 		if metric.Hash != "" {
