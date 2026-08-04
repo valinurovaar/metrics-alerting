@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"metrics-alerting/internal/storage"
 	"metrics-alerting/internal/model"
+	"metrics-alerting/internal/storage"
 )
 
 type MetricsServer struct {
@@ -26,7 +26,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/update/")
 
 	path = strings.TrimRight(path, "/")
-	
+
 	parts := strings.Split(path, "/")
 
 	if len(parts) != 3 {
@@ -43,7 +43,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if metricType != "gauge" && metricType != "counter" {
+	if metricType != models.Gauge && metricType != models.Counter {
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 		return
 	}
@@ -53,7 +53,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		MType: metricType,
 	}
 
-	if metricType == "gauge" {
+	if metricType == models.Gauge {
 		value, err := strconv.ParseFloat(metricValueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid metric value", http.StatusBadRequest)
