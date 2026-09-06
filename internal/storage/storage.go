@@ -99,47 +99,20 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 	key := metricKey(metric.MType, metric.ID)
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	existing, ok := s.metrics[key]
-	if !ok {
-		cp := copyMetric(metric)
-
-		if cp.MType == "gauge" {
-			cp.Delta = nil
-		} else {
-			cp.Value = nil
+	if existing, ok := s.metrics[key]; ok {
+		if metric.MType == model.Counter && metric.Delta != nil {
+			if existing.Delta == nil {
+				existing.Delta = new(int64)
+			}
+			*existing.Delta += *metric.Delta
 		}
-
-		s.metrics[key] = cp
+		if metric.MType == model.Gauge && metric.Value != nil {
+			existing.Value = metric.Value
+		}
 	} else {
-		switch metric.MType {
-		case "gauge":
-			if metric.Value != nil {
-				v := *metric.Value
-				existing.Value = &v
-				existing.Delta = nil
-			}
-
-		case "counter":
-			if metric.Delta != nil {
-				var newDelta int64
-
-				if existing.Delta != nil {
-					newDelta = *existing.Delta + *metric.Delta
-				} else {
-					newDelta = *metric.Delta
-				}
-
-				existing.Delta = &newDelta
-				existing.Value = nil
-			}
-		}
-	}
-
-	s.mu.Unlock()
-
-	if s.path != "" && s.interval == 0 {
-		return s.Save()
+		s.metrics[key] = metric
 	}
 
 	return nil
