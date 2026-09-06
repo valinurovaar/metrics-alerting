@@ -28,7 +28,7 @@ func main() {
 		if value, err := strconv.Atoi(envReport); err == nil {
 			*reportInterval = value
 		} else {
-			log.Printf("Warning: не удалось распарсить переменную окружения REPORT_INTERVAL (%s), используется значение по умолчанию: %d", envReport, *reportInterval)
+			log.Printf("Warning: invalid REPORT_INTERVAL %q, using current value %d", envReport, *reportInterval)
 		}
 	}
 
@@ -36,7 +36,7 @@ func main() {
 		if value, err := strconv.Atoi(envPoll); err == nil {
 			*pollInterval = value
 		} else {
-			log.Printf("Warning: не удалось распарсить переменную окружения POLL_INTERVAL (%s), используется значение по умолчанию: %d", envPoll, *pollInterval)
+			log.Printf("Warning: invalid POLL_INTERVAL %q, using current value %d", envPoll, *pollInterval)
 		}
 	}
 

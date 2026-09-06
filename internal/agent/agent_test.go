@@ -79,7 +79,10 @@ func TestReport_SendsMetrics(t *testing.T) {
 		select {
 		case <-receivedMetrics:
 		case <-deadline:
-			t.Errorf("Expected metrics to be sent, got %d", currentCount)
+			mu.Lock()
+			finalCount := len(received)
+			mu.Unlock()
+			t.Errorf("Expected metrics to be sent, got %d", finalCount)
 			return
 		}
 	}
