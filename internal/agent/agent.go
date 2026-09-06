@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 	"strings"
 )
@@ -22,6 +23,7 @@ type Agent struct {
 	counters       map[string]int64
 	reportInterval time.Duration
 	pollInterval   time.Duration
+	mu        sync.Mutex
 }
 
 func New(serverURL string) *Agent {
@@ -58,6 +60,9 @@ func (a *Agent) Poll() {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.gauges["Alloc"] = float64(ms.Alloc)
 	a.gauges["BuckHashSys"] = float64(ms.BuckHashSys)
 	a.gauges["Frees"] = float64(ms.Frees)
@@ -91,11 +96,28 @@ func (a *Agent) Poll() {
 }
 
 func (a *Agent) Report() {
-	for name, value := range a.gauges {
+	a.mu.Lock()
+
+	gaugesCopy := make(map[string]float64, len(a.gauges))
+	for k, v := range a.gauges {
+		gaugesCopy[k] = v
+	}
+
+	countersCopy := make(map[string]int64, len(a.counters))
+	for k, v := range a.counters {
+		if v != 0 {
+			countersCopy[k] = v
+			a.counters[k] = 0
+		}
+	}
+
+	a.mu.Unlock()
+
+	for name, value := range gaugesCopy {
 		a.sendMetric("gauge", name, strconv.FormatFloat(value, 'f', -1, 64))
 	}
 
-	for name, value := range a.counters {
+	for name, value := range countersCopy {
 		if value == 0 {
 			continue
 		}
