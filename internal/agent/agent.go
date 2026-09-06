@@ -9,10 +9,8 @@ import (
 	"math/rand"
 	"net/http"
 	"runtime"
-	"strconv"
-	"sync"
-	"time"
 	"strings"
+	"sync"
 	"time"
 
 	"metrics-alerting/internal/model"
@@ -30,7 +28,7 @@ type Agent struct {
 	counters       map[string]int64
 	reportInterval time.Duration
 	pollInterval   time.Duration
-	mu        sync.Mutex
+	mu             sync.Mutex
 }
 
 func New(serverURL string) *Agent {
@@ -121,23 +119,24 @@ func (a *Agent) Report() {
 	a.mu.Unlock()
 
 	for name, value := range gaugesCopy {
-		a.sendMetric("gauge", name, strconv.FormatFloat(value, 'f', -1, 64))
+		v := value
+		a.sendMetric(model.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &v,
+		})
 	}
 
 	for name, value := range countersCopy {
 		if value == 0 {
 			continue
 		}
-
 		v := value
-
 		a.sendMetric(model.Metrics{
 			ID:    name,
 			MType: "counter",
 			Delta: &v,
 		})
-
-		a.counters[name] = 0
 	}
 }
 

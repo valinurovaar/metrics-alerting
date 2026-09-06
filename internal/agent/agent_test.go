@@ -63,11 +63,22 @@ func TestReport_SendsMetrics(t *testing.T) {
 	deadline := time.After(3 * time.Second)
 	expectedCount := 5
 
-	for len(received) < expectedCount {
+	for {
+		mu.Lock()
+		currentCount := len(received)
+		mu.Unlock()
+
+		if currentCount >= expectedCount {
+			break
+		}
+
 		select {
 		case <-receivedMetrics:
 		case <-deadline:
-			t.Errorf("Expected metrics to be sent, got %d", len(received))
+			mu.Lock()
+			finalCount := len(received)
+			mu.Unlock()
+			t.Errorf("Expected metrics to be sent, got %d", finalCount)
 			return
 		}
 	}
