@@ -1,23 +1,29 @@
 package handler
 
 import (
-	"fmt"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-	"go.uber.org/zap"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/storage"
 )
 
 type MetricsServer struct {
-	storage storage.Storage
-	logger  *zap.Logger
+	storage  storage.Storage
+	logger   *zap.Logger
+	database DatabasePinger
+}
+
+type DatabasePinger interface {
+	PingContext(ctx context.Context) error
 }
 
 type responseWriter struct {
@@ -26,11 +32,16 @@ type responseWriter struct {
 	size       int
 }
 
-func NewMetricsServer(s storage.Storage, logger *zap.Logger) *MetricsServer {
-	return &MetricsServer{
+func NewMetricsServer(s storage.Storage, logger *zap.Logger, database ...DatabasePinger) *MetricsServer {
+	server := &MetricsServer{
 		storage: s,
 		logger:  logger,
 	}
+	if len(database) > 0 {
+		server.database = database[0]
+	}
+
+	return server
 }
 
 func (s *MetricsServer) Routes() chi.Router {
@@ -40,11 +51,12 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Use(LoggingMiddleware(s.logger))
 
 	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
-
+ 
 	r.Post("/update", s.UpdateJSONHandler)
 	r.Post("/update/", s.UpdateJSONHandler)
 
 	r.Get("/value/{type}/{name}", s.GetValueHandler)
+	r.Get("/ping", s.PingHandler)
 
 	r.Post("/value", s.PostValueJSONHandler)
 	r.Post("/value/", s.PostValueJSONHandler)
@@ -52,6 +64,24 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Get("/", s.ListHandler)
 
 	return r
+}
+
+func (s *MetricsServer) PingHandler(w http.ResponseWriter, r *http.Request) {
+	if s.database == nil {
+		http.Error(w, "database connection failed", http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+
+	if err := s.database.PingContext(ctx); err != nil {
+		s.logger.Error("database ping failed", zap.Error(err))
+		http.Error(w, "database connection failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
