@@ -41,7 +41,10 @@ func TestUpdateHandler_GaugeSuccess(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	m, ok := stor.GetMetric("TestGauge", "gauge")
+	m, ok, err := stor.GetMetric("TestGauge", "gauge")
+	if err != nil {
+		t.Fatalf("GetMetric failed: %v", err)
+	}
 	if !ok || m.Value == nil || *m.Value != 123.45 {
 		t.Errorf("Metric not saved correctly, got %+v", m)
 	}
@@ -60,7 +63,10 @@ func TestUpdateHandler_CounterSuccess(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	m, ok := stor.GetMetric("TestCounter", "counter")
+	m, ok, err := stor.GetMetric("TestCounter", "counter")
+	if err != nil {
+		t.Fatalf("GetMetric failed: %v", err)
+	}
 	if !ok || m.Delta == nil || *m.Delta != 10 {
 		t.Errorf("Metric not saved correctly, got %+v", m)
 	}

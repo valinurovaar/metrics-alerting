@@ -51,7 +51,7 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Use(LoggingMiddleware(s.logger))
 
 	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
- 
+
 	r.Post("/update", s.UpdateJSONHandler)
 	r.Post("/update/", s.UpdateJSONHandler)
 
@@ -179,7 +179,12 @@ func (s *MetricsServer) GetValueHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	metric, ok := s.storage.GetMetric(metricID, metricType)
+	metric, ok, err := s.storage.GetMetric(metricID, metricType)
+	if err != nil {
+		s.logger.Error("failed to get metric", zap.Error(err))
+		http.Error(w, "failed to get metric", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -223,7 +228,12 @@ func (s *MetricsServer) PostValueJSONHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	metric, ok := s.storage.GetMetric(req.ID, req.MType)
+	metric, ok, err := s.storage.GetMetric(req.ID, req.MType)
+	if err != nil {
+		s.logger.Error("failed to get metric", zap.Error(err))
+		http.Error(w, "failed to get metric", http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -237,7 +247,12 @@ func (s *MetricsServer) PostValueJSONHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := s.storage.GetAllMetrics()
+	metrics, err := s.storage.GetAllMetrics()
+	if err != nil {
+		s.logger.Error("failed to list metrics", zap.Error(err))
+		http.Error(w, "failed to list metrics", http.StatusInternalServerError)
+		return
+	}
 
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html><head><title>Metrics</title></head><body>\n")
