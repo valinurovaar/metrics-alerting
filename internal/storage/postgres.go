@@ -1,15 +1,18 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"sort"
 
 	"metrics-alerting/internal/model"
+	"metrics-alerting/internal/retry"
 )
 
 type PostgresStorage struct {
-	database *sql.DB
+	database    *sql.DB
+	retryPolicy retry.Policy
 }
 
 func NewPostgresStorage(database *sql.DB) *PostgresStorage {
@@ -20,7 +23,9 @@ func (s *PostgresStorage) Update(metric *model.Metrics) error {
 	if err := validateMetric(metric); err != nil {
 		return err
 	}
-	return updatePostgres(s.database, metric)
+	return s.retryPolicy.Do(context.Background(), func() error {
+		return updatePostgres(s.database, metric)
+	}, retry.IsPostgresConnectionError)
 }
 
 func (s *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
@@ -37,6 +42,20 @@ func (s *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return metricKey(ordered[i].MType, ordered[i].ID) < metricKey(ordered[j].MType, ordered[j].ID)
 	})
+	return s.retryPolicy.Do(context.Background(), func() error {
+		return s.updateBatchOnce(ordered)
+	}, func(err error) bool {
+		var commit *commitError
+		return !errors.As(err, &commit) && retry.IsPostgresConnectionError(err)
+	})
+}
+
+// A failed COMMIT can have an unknown outcome. Do not replay counter increments.
+type commitError struct{ error }
+
+func (e *commitError) Unwrap() error { return e.error }
+
+func (s *PostgresStorage) updateBatchOnce(ordered []model.Metrics) error {
 	tx, err := s.database.Begin()
 	if err != nil {
 		return err
@@ -47,7 +66,10 @@ func (s *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return &commitError{err}
+	}
+	return nil
 }
 
 type sqlExecutor interface {
@@ -87,6 +109,17 @@ func updatePostgres(executor sqlExecutor, metric *model.Metrics) error {
 }
 
 func (s *PostgresStorage) GetMetric(id string, mType string) (*model.Metrics, bool, error) {
+	var metric *model.Metrics
+	var found bool
+	err := s.retryPolicy.Do(context.Background(), func() error {
+		var err error
+		metric, found, err = s.getMetricOnce(id, mType)
+		return err
+	}, retry.IsPostgresConnectionError)
+	return metric, found, err
+}
+
+func (s *PostgresStorage) getMetricOnce(id string, mType string) (*model.Metrics, bool, error) {
 	metric := &model.Metrics{ID: id, MType: mType}
 	var value sql.NullFloat64
 	var delta sql.NullInt64
@@ -114,6 +147,16 @@ func (s *PostgresStorage) GetMetric(id string, mType string) (*model.Metrics, bo
 }
 
 func (s *PostgresStorage) GetAllMetrics() (map[string]*model.Metrics, error) {
+	var metrics map[string]*model.Metrics
+	err := s.retryPolicy.Do(context.Background(), func() error {
+		var err error
+		metrics, err = s.getAllMetricsOnce()
+		return err
+	}, retry.IsPostgresConnectionError)
+	return metrics, err
+}
+
+func (s *PostgresStorage) getAllMetricsOnce() (map[string]*model.Metrics, error) {
 	result := make(map[string]*model.Metrics)
 	rows, err := s.database.Query(`
 		SELECT id, type, gauge_value, counter_value

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"metrics-alerting/internal/model"
+	"metrics-alerting/internal/retry"
 )
 
 const (
@@ -31,6 +32,7 @@ type Agent struct {
 	pollInterval   time.Duration
 	mu             sync.Mutex
 	reportMu       sync.Mutex
+	retryPolicy    retry.Policy
 }
 
 func New(serverURL string) *Agent {
@@ -192,12 +194,18 @@ func (a *Agent) sendPayload(ctx context.Context, path string, payload any) error
 	}
 
 	endpoint := strings.TrimRight(a.serverURL, "/") + path
+	compressed := append([]byte(nil), buf.Bytes()...)
+	return a.retryPolicy.Do(ctx, func() error {
+		return a.sendRequest(ctx, endpoint, compressed)
+	}, retry.IsDialError)
+}
 
+func (a *Agent) sendRequest(ctx context.Context, endpoint string, compressed []byte) error {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
 		endpoint,
-		&buf,
+		bytes.NewReader(compressed),
 	)
 	if err != nil {
 		return err
