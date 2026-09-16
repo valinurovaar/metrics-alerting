@@ -41,7 +41,7 @@ func TestUpdateHandler_GaugeSuccess(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	m, ok, err := stor.GetMetric("TestGauge", "gauge")
+	m, ok, err := stor.GetMetric(context.Background(), "TestGauge", "gauge")
 	if err != nil {
 		t.Fatalf("GetMetric failed: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestUpdateHandler_CounterSuccess(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	m, ok, err := stor.GetMetric("TestCounter", "counter")
+	m, ok, err := stor.GetMetric(context.Background(), "TestCounter", "counter")
 	if err != nil {
 		t.Fatalf("GetMetric failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestGetValueHandler_GaugeSuccess(t *testing.T) {
 	server := setupTestServer(stor)
 
 	value := 42.5
-	stor.Update(&model.Metrics{ID: "TestGauge", MType: "gauge", Value: &value})
+	stor.Update(context.Background(), &model.Metrics{ID: "TestGauge", MType: "gauge", Value: &value})
 
 	req := httptest.NewRequest(http.MethodGet, "/value/gauge/TestGauge", nil)
 	w := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestGetValueHandler_CounterSuccess(t *testing.T) {
 	server := setupTestServer(stor)
 
 	delta := int64(100)
-	stor.Update(&model.Metrics{ID: "TestCounter", MType: "counter", Delta: &delta})
+	stor.Update(context.Background(), &model.Metrics{ID: "TestCounter", MType: "counter", Delta: &delta})
 
 	req := httptest.NewRequest(http.MethodGet, "/value/counter/TestCounter", nil)
 	w := httptest.NewRecorder()
@@ -206,8 +206,8 @@ func TestListHandler_Success(t *testing.T) {
 
 	gaugeVal := 10.5
 	counterDelta := int64(7)
-	stor.Update(&model.Metrics{ID: "MyGauge", MType: "gauge", Value: &gaugeVal})
-	stor.Update(&model.Metrics{ID: "MyCounter", MType: "counter", Delta: &counterDelta})
+	stor.Update(context.Background(), &model.Metrics{ID: "MyGauge", MType: "gauge", Value: &gaugeVal})
+	stor.Update(context.Background(), &model.Metrics{ID: "MyCounter", MType: "counter", Delta: &counterDelta})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -226,6 +226,29 @@ func TestListHandler_Success(t *testing.T) {
 	}
 	if !strings.Contains(html, "MyCounter") || !strings.Contains(html, "7") {
 		t.Errorf("Expected HTML to contain counter metric, got %q", html)
+	}
+}
+
+func TestListHandler_EscapesMetricName(t *testing.T) {
+	stor := storage.NewMemStorage()
+	value := 1.0
+	maliciousName := `<script>alert("xss")</script>`
+	if err := stor.Update(context.Background(), &model.Metrics{
+		ID: maliciousName, MType: model.Gauge, Value: &value,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	setupTestServer(stor).ServeHTTP(w, req)
+	body := w.Body.String()
+
+	if strings.Contains(body, maliciousName) {
+		t.Fatalf("response contains unescaped metric name: %q", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatalf("response does not contain escaped metric name: %q", body)
 	}
 }
 

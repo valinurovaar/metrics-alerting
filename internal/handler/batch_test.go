@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,11 +35,11 @@ func TestUpdatesBatch(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status: %d, body: %s", w.Code, w.Body.String())
 		}
-		metric, ok, err := stor.GetMetric("C", "counter")
+		metric, ok, err := stor.GetMetric(context.Background(), "C", "counter")
 		if err != nil || !ok || *metric.Delta != 5 {
 			t.Fatalf("unexpected counter: %+v, %v", metric, err)
 		}
-		metric, ok, err = stor.GetMetric("G", "gauge")
+		metric, ok, err = stor.GetMetric(context.Background(), "G", "gauge")
 		if err != nil || !ok || *metric.Value != 1.5 {
 			t.Fatalf("unexpected gauge: %+v, %v", metric, err)
 		}
@@ -57,7 +58,7 @@ func TestUpdatesInvalidBatchIsNotApplied(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("body %s: status %d", body, w.Code)
 		}
-		all, _ := stor.GetAllMetrics()
+		all, _ := stor.GetAllMetrics(context.Background())
 		if len(all) != 0 {
 			t.Errorf("invalid batch was partially applied: %+v", all)
 		}
