@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"errors"
+	"sort"
 
 	"metrics-alerting/internal/model"
 )
@@ -19,13 +20,48 @@ func (s *PostgresStorage) Update(metric *model.Metrics) error {
 	if err := validateMetric(metric); err != nil {
 		return err
 	}
+	return updatePostgres(s.database, metric)
+}
+
+func (s *PostgresStorage) UpdateBatch(metrics []model.Metrics) error {
+	for i := range metrics {
+		if err := validateMetric(&metrics[i]); err != nil {
+			return err
+		}
+	}
+	if len(metrics) == 0 {
+		return nil
+	}
+	// Acquire row locks in a consistent order, preserving duplicate metric order.
+	ordered := append([]model.Metrics(nil), metrics...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return metricKey(ordered[i].MType, ordered[i].ID) < metricKey(ordered[j].MType, ordered[j].ID)
+	})
+	tx, err := s.database.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i := range ordered {
+		if err := updatePostgres(tx, &ordered[i]); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func updatePostgres(executor sqlExecutor, metric *model.Metrics) error {
 
 	switch metric.MType {
 	case model.Gauge:
 		if metric.Value == nil {
 			return errors.New("gauge value is required")
 		}
-		_, err := s.database.Exec(`
+		_, err := executor.Exec(`
 			INSERT INTO metrics (id, type, gauge_value, counter_value)
 			VALUES ($1, $2, $3, NULL)
 			ON CONFLICT (id, type) DO UPDATE
@@ -37,7 +73,7 @@ func (s *PostgresStorage) Update(metric *model.Metrics) error {
 		if metric.Delta == nil {
 			return errors.New("counter delta is required")
 		}
-		_, err := s.database.Exec(`
+		_, err := executor.Exec(`
 			INSERT INTO metrics (id, type, gauge_value, counter_value)
 			VALUES ($1, $2, NULL, $3)
 			ON CONFLICT (id, type) DO UPDATE

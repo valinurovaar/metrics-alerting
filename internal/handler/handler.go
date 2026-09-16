@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,8 @@ func (s *MetricsServer) Routes() chi.Router {
 
 	r.Post("/update", s.UpdateJSONHandler)
 	r.Post("/update/", s.UpdateJSONHandler)
+	r.Post("/updates", s.UpdateBatchHandler)
+	r.Post("/updates/", s.UpdateBatchHandler)
 
 	r.Get("/value/{type}/{name}", s.GetValueHandler)
 	r.Get("/ping", s.PingHandler)
@@ -64,6 +67,40 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Get("/", s.ListHandler)
 
 	return r
+}
+
+func (s *MetricsServer) UpdateBatchHandler(w http.ResponseWriter, r *http.Request) {
+	var metrics []model.Metrics
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&metrics); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	for _, metric := range metrics {
+		if metric.ID == "" {
+			http.Error(w, "metric id is required", http.StatusNotFound)
+			return
+		}
+		if (metric.MType != model.Gauge && metric.MType != model.Counter) ||
+			(metric.MType == model.Gauge && metric.Value == nil) ||
+			(metric.MType == model.Counter && metric.Delta == nil) {
+			http.Error(w, "invalid metric", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := s.storage.UpdateBatch(metrics); err != nil {
+		s.logger.Error("failed to update metrics batch", zap.Error(err))
+		http.Error(w, "failed to update metrics", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("{}"))
 }
 
 func (s *MetricsServer) PingHandler(w http.ResponseWriter, r *http.Request) {
