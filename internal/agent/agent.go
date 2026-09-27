@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/retry"
 	"metrics-alerting/internal/signature"
@@ -22,6 +24,7 @@ import (
 const (
 	PollInterval   = 2 * time.Second
 	ReportInterval = 10 * time.Second
+	RateLimit      = 3
 )
 
 type Agent struct {
@@ -31,6 +34,7 @@ type Agent struct {
 	counters       map[string]int64
 	reportInterval time.Duration
 	pollInterval   time.Duration
+	rateLimit      int
 	mu             sync.Mutex
 	reportMu       sync.Mutex
 	retryPolicy    retry.Policy
@@ -52,38 +56,139 @@ func New(serverURL string) *Agent {
 		counters:       make(map[string]int64),
 		reportInterval: ReportInterval,
 		pollInterval:   PollInterval,
+		rateLimit:      RateLimit,
 	}
 }
 
 func (a *Agent) Run(ctx context.Context) {
 	a.mu.Lock()
-	pollInterval, reportInterval := a.pollInterval, a.reportInterval
+	pollInterval, reportInterval, rateLimit := a.pollInterval, a.reportInterval, a.rateLimit
 	a.mu.Unlock()
-	pollTicker := time.NewTicker(pollInterval)
-	defer pollTicker.Stop()
+
+	jobs := make(chan reportJob, rateLimit*2)
+	var wg sync.WaitGroup
+	for i := 0; i < rateLimit; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.reportWorker(ctx, jobs)
+		}()
+	}
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		a.collectRuntime(ctx, pollInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		a.collectSystem(ctx, pollInterval)
+	}()
 
 	reportTicker := time.NewTicker(reportInterval)
 	defer reportTicker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-pollTicker.C:
-				a.Poll()
-			}
-		}
-	}()
+	defer wg.Wait()
 
 	for {
 		select {
 		case <-ctx.Done():
+			close(jobs)
 			return
 		case <-reportTicker.C:
-			a.Report(ctx)
+			if !a.enqueueReport(ctx, jobs) {
+				close(jobs)
+				return
+			}
 		}
 	}
+}
+
+type reportJob struct {
+	metric       model.Metrics
+	counterName  string
+	counterDelta int64
+}
+
+func (a *Agent) collectRuntime(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.Poll()
+		}
+	}
+}
+
+func (a *Agent) collectSystem(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.PollSystem(); err != nil {
+				fmt.Printf("collect system metrics error: %v\n", err)
+			}
+		}
+	}
+}
+
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- reportJob) bool {
+	a.mu.Lock()
+	report := make([]reportJob, 0, len(a.gauges)+len(a.counters))
+	for name, gauge := range a.gauges {
+		value := gauge
+		report = append(report, reportJob{metric: model.Metrics{ID: name, MType: model.Gauge, Value: &value}})
+	}
+	for name, counter := range a.counters {
+		if counter == 0 {
+			continue
+		}
+		delta := counter
+		report = append(report, reportJob{
+			metric:       model.Metrics{ID: name, MType: model.Counter, Delta: &delta},
+			counterName:  name,
+			counterDelta: delta,
+		})
+		a.counters[name] -= delta
+	}
+	a.mu.Unlock()
+
+	for i, job := range report {
+		select {
+		case jobs <- job:
+		case <-ctx.Done():
+			for _, unsent := range report[i:] {
+				a.restoreCounter(unsent)
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Agent) reportWorker(ctx context.Context, jobs <-chan reportJob) {
+	for job := range jobs {
+		if err := a.sendPayload(ctx, "/updates/", []model.Metrics{job.metric}); err != nil {
+			a.restoreCounter(job)
+			if ctx.Err() == nil {
+				fmt.Printf("send metric %s error: %v\n", job.metric.ID, err)
+			}
+		}
+	}
+}
+
+func (a *Agent) restoreCounter(job reportJob) {
+	if job.counterName == "" {
+		return
+	}
+	a.mu.Lock()
+	a.counters[job.counterName] += job.counterDelta
+	a.mu.Unlock()
 }
 
 func (a *Agent) Poll() {
@@ -123,6 +228,27 @@ func (a *Agent) Poll() {
 
 	a.counters["PollCount"]++
 	a.gauges["RandomValue"] = rand.Float64()
+}
+
+// PollSystem collects host metrics independently from Go runtime metrics.
+func (a *Agent) PollSystem() error {
+	memory, err := mem.VirtualMemory()
+	if err != nil {
+		return fmt.Errorf("read virtual memory: %w", err)
+	}
+	utilization, err := cpu.Percent(0, true)
+	if err != nil {
+		return fmt.Errorf("read cpu utilization: %w", err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.gauges["TotalMemory"] = float64(memory.Total)
+	a.gauges["FreeMemory"] = float64(memory.Free)
+	for i, value := range utilization {
+		a.gauges[fmt.Sprintf("CPUutilization%d", i+1)] = value
+	}
+	return nil
 }
 
 func (a *Agent) Report(ctx context.Context) {
@@ -170,6 +296,15 @@ func (a *Agent) SetPollInterval(interval time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pollInterval = interval
+}
+
+func (a *Agent) SetRateLimit(limit int) {
+	if limit <= 0 {
+		limit = 1
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rateLimit = limit
 }
 
 func (a *Agent) SetKey(key string) {
