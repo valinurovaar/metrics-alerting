@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +15,10 @@ import (
 )
 
 type Storage interface {
-	Update(metric *model.Metrics) error
-	UpdateBatch(metrics []model.Metrics) error
-	GetMetric(id string, mType string) (*model.Metrics, bool, error)
-	GetAllMetrics() (map[string]*model.Metrics, error)
+	Update(ctx context.Context, metric *model.Metrics) error
+	UpdateBatch(ctx context.Context, metrics []model.Metrics) error
+	GetMetric(ctx context.Context, id string, mType string) (*model.Metrics, bool, error)
+	GetAllMetrics(ctx context.Context) (map[string]*model.Metrics, error)
 }
 
 type PersistenceConfig struct {
@@ -84,14 +85,17 @@ func NewPersistentMemStorage(cfg PersistenceConfig) (*MemStorage, error) {
 	return s, nil
 }
 
-func (s *MemStorage) Update(metric *model.Metrics) error {
+func (s *MemStorage) Update(ctx context.Context, metric *model.Metrics) error {
 	if err := validateMetric(metric); err != nil {
 		return err
 	}
-	return s.UpdateBatch([]model.Metrics{*metric})
+	return s.UpdateBatch(ctx, []model.Metrics{*metric})
 }
 
-func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
+func (s *MemStorage) UpdateBatch(ctx context.Context, metrics []model.Metrics) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	for i := range metrics {
 		if err := validateMetric(&metrics[i]); err != nil {
 			return err
@@ -130,7 +134,10 @@ func (s *MemStorage) updateLocked(metric *model.Metrics) {
 
 }
 
-func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool, error) {
+func (s *MemStorage) GetMetric(ctx context.Context, id string, mType string) (*model.Metrics, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -144,7 +151,10 @@ func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool, e
 	return copyMetric(metric), true, nil
 }
 
-func (s *MemStorage) GetAllMetrics() (map[string]*model.Metrics, error) {
+func (s *MemStorage) GetAllMetrics(ctx context.Context) (map[string]*model.Metrics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

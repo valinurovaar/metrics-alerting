@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"testing"
@@ -49,7 +50,7 @@ func TestPostgresStorageUpdate(t *testing.T) {
 			expectation.WithArgs(tt.args...).WillReturnResult(sqlmock.NewResult(1, 1))
 
 			stor := NewPostgresStorage(database)
-			if err := stor.Update(tt.metric); err != nil {
+			if err := stor.Update(context.Background(), tt.metric); err != nil {
 				t.Fatalf("Update failed: %v", err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -71,7 +72,7 @@ func TestPostgresStorageGetMetric(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"gauge_value", "counter_value"}).AddRow(12.5, nil))
 
 	stor := NewPostgresStorage(database)
-	metric, ok, err := stor.GetMetric("temperature", model.Gauge)
+	metric, ok, err := stor.GetMetric(context.Background(), "temperature", model.Gauge)
 	if err != nil {
 		t.Fatalf("GetMetric failed: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestPostgresStorageGetMetricNotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 
 	stor := NewPostgresStorage(database)
-	metric, ok, err := stor.GetMetric("unknown", model.Counter)
+	metric, ok, err := stor.GetMetric(context.Background(), "unknown", model.Counter)
 	if err != nil {
 		t.Fatalf("GetMetric failed: %v", err)
 	}

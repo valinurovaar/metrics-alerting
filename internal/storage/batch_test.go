@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -18,16 +19,16 @@ func TestMemBatchConcurrent(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
 				delta := int64(1)
-				if err := stor.UpdateBatch([]model.Metrics{{ID: "C", MType: model.Counter, Delta: &delta}}); err != nil {
+				if err := stor.UpdateBatch(context.Background(), []model.Metrics{{ID: "C", MType: model.Counter, Delta: &delta}}); err != nil {
 					t.Error(err)
 				}
 				delta = 100 // Input must not alias stored values.
-				stor.GetAllMetrics()
+				stor.GetAllMetrics(context.Background())
 			}
 		}()
 	}
 	wg.Wait()
-	m, _, _ := stor.GetMetric("C", model.Counter)
+	m, _, _ := stor.GetMetric(context.Background(), "C", model.Counter)
 	if *m.Delta != 1000 {
 		t.Fatalf("counter = %d", *m.Delta)
 	}
@@ -52,7 +53,7 @@ func TestPostgresBatchTransaction(t *testing.T) {
 			mock.ExpectCommit()
 		}
 		batch := []model.Metrics{{ID: "C", MType: model.Counter, Delta: &delta}, {ID: "C", MType: model.Counter, Delta: &delta}}
-		if err := stor.UpdateBatch(batch); (err != nil) != fail {
+		if err := stor.UpdateBatch(context.Background(), batch); (err != nil) != fail {
 			t.Errorf("unexpected error: %v", err)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
