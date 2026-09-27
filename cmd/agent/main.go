@@ -17,6 +17,7 @@ func main() {
 	addr := flag.String("a", "localhost:8080", "HTTP server address")
 	reportInterval := flag.Int("r", 10, "Report interval in seconds")
 	pollInterval := flag.Int("p", 2, "Poll interval in seconds")
+	key := flag.String("k", "", "Key for signing request bodies")
 
 	flag.Parse()
 
@@ -39,8 +40,12 @@ func main() {
 			log.Printf("Warning: invalid POLL_INTERVAL %q, using current value %d", envPoll, *pollInterval)
 		}
 	}
+	if envKey := os.Getenv("KEY"); envKey != "" {
+		*key = envKey
+	}
 
 	a := agent.New(*addr)
+	a.SetKey(*key)
 
 	a.SetReportInterval(time.Duration(*reportInterval) * time.Second)
 	a.SetPollInterval(time.Duration(*pollInterval) * time.Second)
