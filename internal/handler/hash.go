@@ -56,7 +56,8 @@ func HashMiddleware(key string) func(http.Handler) http.Handler {
 				_ = r.Body.Close()
 				r.Body = io.NopCloser(bytes.NewReader(body))
 
-				if !signature.Valid(body, key, r.Header.Get(signature.Header)) {
+				receivedHash := r.Header.Get(signature.Header)
+				if receivedHash != "" && !signature.Valid(body, key, receivedHash) {
 					http.Error(buffered, "invalid request hash", http.StatusBadRequest)
 					writeSignedResponse(w, buffered, key)
 					return
