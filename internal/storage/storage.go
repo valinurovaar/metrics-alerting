@@ -1,9 +1,11 @@
 package storage
 
-import ("sync"
-"fmt"
-"metrics-alerting/internal/model")
+import (
+	"fmt"
+	"sync"
 
+	"metrics-alerting/internal/model"
+)
 
 type Storage interface {
 	Update(metric *models.Metrics) error
@@ -28,13 +30,13 @@ func (s *MemStorage) Update(metric *models.Metrics) error {
 	key := fmt.Sprintf("%s:%s", metric.MType, metric.ID)
 
 	if existing, ok := s.metrics[key]; ok {
-		if metric.MType == "counter" && metric.Delta != nil {
+		if metric.MType == models.Counter && metric.Delta != nil {
 			if existing.Delta == nil {
 				existing.Delta = new(int64)
 			}
 			*existing.Delta += *metric.Delta
 		}
-		if metric.MType == "gauge" && metric.Value != nil {
+		if metric.MType == models.Gauge && metric.Value != nil {
 			existing.Value = metric.Value
 		}
 		if metric.Hash != "" {
