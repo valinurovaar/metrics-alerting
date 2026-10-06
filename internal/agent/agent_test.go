@@ -33,7 +33,10 @@ func TestReport_SendsMetrics(t *testing.T) {
 			reader = gz
 		}
 
-		var req model.Metrics
+		if r.URL.Path != "/updates/" || r.Header.Get("Content-Encoding") != "gzip" {
+			t.Errorf("expected gzip batch API, got %s", r.URL.Path)
+		}
+		var req []model.Metrics
 		if err := json.NewDecoder(reader).Decode(&req); err != nil {
 			t.Errorf("cannot decode json: %v", err)
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -41,11 +44,11 @@ func TestReport_SendsMetrics(t *testing.T) {
 		}
 
 		mu.Lock()
-		received = append(received, req)
+		received = append(received, req...)
 		mu.Unlock()
 
 		select {
-		case receivedMetrics <- req:
+		case receivedMetrics <- req[0]:
 		default:
 		}
 

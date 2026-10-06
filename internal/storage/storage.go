@@ -15,6 +15,7 @@ import (
 
 type Storage interface {
 	Update(metric *model.Metrics) error
+	UpdateBatch(metrics []model.Metrics) error
 	GetMetric(id string, mType string) (*model.Metrics, bool, error)
 	GetAllMetrics() (map[string]*model.Metrics, error)
 }
@@ -87,11 +88,31 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 	if err := validateMetric(metric); err != nil {
 		return err
 	}
+	return s.UpdateBatch([]model.Metrics{*metric})
+}
 
-	key := metricKey(metric.MType, metric.ID)
-
+func (s *MemStorage) UpdateBatch(metrics []model.Metrics) error {
+	for i := range metrics {
+		if err := validateMetric(&metrics[i]); err != nil {
+			return err
+		}
+	}
+	if len(metrics) == 0 {
+		return nil
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	for i := range metrics {
+		s.updateLocked(copyMetric(&metrics[i]))
+	}
+	s.mu.Unlock()
+	if s.path != "" && s.interval == 0 {
+		return s.Save()
+	}
+	return nil
+}
+
+func (s *MemStorage) updateLocked(metric *model.Metrics) {
+	key := metricKey(metric.MType, metric.ID)
 
 	if existing, ok := s.metrics[key]; ok {
 		if metric.MType == model.Counter && metric.Delta != nil {
@@ -107,7 +128,6 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 		s.metrics[key] = metric
 	}
 
-	return nil
 }
 
 func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool, error) {
@@ -141,6 +161,8 @@ func (s *MemStorage) Save() error {
 	if s.path == "" {
 		return nil
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 
 	s.mu.RLock()
 
@@ -185,9 +207,6 @@ func (s *MemStorage) Save() error {
 	}
 
 	data = append(data, '\n')
-
-	s.saveMu.Lock()
-	defer s.saveMu.Unlock()
 
 	dir := filepath.Dir(s.path)
 	if dir != "" && dir != "." {
@@ -348,6 +367,12 @@ func validateMetric(metric *model.Metrics) error {
 	}
 	if metric.MType != model.Gauge && metric.MType != model.Counter {
 		return errors.New("invalid metric type")
+	}
+	if metric.MType == model.Gauge && metric.Value == nil {
+		return errors.New("gauge value is required")
+	}
+	if metric.MType == model.Counter && metric.Delta == nil {
+		return errors.New("counter delta is required")
 	}
 	return nil
 }

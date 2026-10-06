@@ -30,6 +30,7 @@ type Agent struct {
 	reportInterval time.Duration
 	pollInterval   time.Duration
 	mu             sync.Mutex
+	reportMu       sync.Mutex
 }
 
 func New(serverURL string) *Agent {
@@ -51,10 +52,13 @@ func New(serverURL string) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) {
-	pollTicker := time.NewTicker(a.pollInterval)
+	a.mu.Lock()
+	pollInterval, reportInterval := a.pollInterval, a.reportInterval
+	a.mu.Unlock()
+	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
 
-	reportTicker := time.NewTicker(a.reportInterval)
+	reportTicker := time.NewTicker(reportInterval)
 	defer reportTicker.Stop()
 
 	go func() {
@@ -118,55 +122,38 @@ func (a *Agent) Poll() {
 }
 
 func (a *Agent) Report(ctx context.Context) {
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
 	a.mu.Lock()
-
-	gaugesCopy := make(map[string]float64, len(a.gauges))
+	metrics := make([]model.Metrics, 0, len(a.gauges)+len(a.counters))
 	for k, v := range a.gauges {
-		gaugesCopy[k] = v
+		value := v
+		metrics = append(metrics, model.Metrics{ID: k, MType: model.Gauge, Value: &value})
 	}
 
 	countersCopy := make(map[string]int64, len(a.counters))
 	for k, v := range a.counters {
 		if v != 0 {
 			countersCopy[k] = v
-			a.counters[k] = 0
+			delta := v
+			metrics = append(metrics, model.Metrics{ID: k, MType: model.Counter, Delta: &delta})
 		}
 	}
 
 	a.mu.Unlock()
 
-	for name, value := range gaugesCopy {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		v := value
-		a.sendMetric(ctx, model.Metrics{
-			ID:    name,
-			MType: "gauge",
-			Value: &v,
-		})
+	if len(metrics) == 0 || ctx.Err() != nil {
+		return
 	}
-
-	for name, value := range countersCopy {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if value == 0 {
-			continue
-		}
-		v := value
-		a.sendMetric(ctx, model.Metrics{
-			ID:    name,
-			MType: "counter",
-			Delta: &v,
-		})
+	if err := a.sendPayload(ctx, "/updates/", metrics); err != nil {
+		fmt.Printf("send batch error: %v\n", err)
+		return
 	}
+	a.mu.Lock()
+	for name, delta := range countersCopy {
+		a.counters[name] -= delta
+	}
+	a.mu.Unlock()
 }
 
 func (a *Agent) SetReportInterval(interval time.Duration) {
@@ -182,26 +169,29 @@ func (a *Agent) SetPollInterval(interval time.Duration) {
 }
 
 func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
-	body, err := json.Marshal(metric)
+	if err := a.sendPayload(ctx, "/update", metric); err != nil {
+		fmt.Printf("send metric error: %v\n", err)
+	}
+}
+
+func (a *Agent) sendPayload(ctx context.Context, path string, payload any) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("marshal error: %v\n", err)
-		return
+		return err
 	}
 
 	var buf bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buf)
 
 	if _, err := gzipWriter.Write(body); err != nil {
-		fmt.Printf("gzip write error: %v\n", err)
-		return
+		return err
 	}
 
 	if err := gzipWriter.Close(); err != nil {
-		fmt.Printf("gzip close error: %v\n", err)
-		return
+		return err
 	}
 
-	endpoint := strings.TrimRight(a.serverURL, "/") + "/update"
+	endpoint := strings.TrimRight(a.serverURL, "/") + path
 
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -210,8 +200,7 @@ func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
 		&buf,
 	)
 	if err != nil {
-		fmt.Printf("create request error: %v\n", err)
-		return
+		return err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -220,11 +209,7 @@ func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		fmt.Printf("send request error: %v\n", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -241,7 +226,7 @@ func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("unexpected status: %d\n", resp.StatusCode)
-		return
+		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
+	return nil
 }
