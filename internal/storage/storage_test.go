@@ -10,7 +10,7 @@ func TestMemStorage_UpdateGauge(t *testing.T) {
 	stor := NewMemStorage()
 
 	value := 42.5
-	err := stor.Update(&models.Metrics{
+	err := stor.Update(&model.Metrics{
 		ID:    "TestGauge",
 		MType: "gauge",
 		Value: &value,
@@ -33,8 +33,8 @@ func TestMemStorage_UpdateGaugeOverwrite(t *testing.T) {
 
 	v1 := 10.0
 	v2 := 20.0
-	stor.Update(&models.Metrics{ID: "G", MType: "gauge", Value: &v1})
-	stor.Update(&models.Metrics{ID: "G", MType: "gauge", Value: &v2})
+	stor.Update(&model.Metrics{ID: "G", MType: "gauge", Value: &v1})
+	stor.Update(&model.Metrics{ID: "G", MType: "gauge", Value: &v2})
 
 	m, _ := stor.GetMetric("G", "gauge")
 	if *m.Value != 20.0 {
@@ -46,7 +46,7 @@ func TestMemStorage_UpdateCounter(t *testing.T) {
 	stor := NewMemStorage()
 
 	delta := int64(10)
-	err := stor.Update(&models.Metrics{
+	err := stor.Update(&model.Metrics{
 		ID:    "TestCounter",
 		MType: "counter",
 		Delta: &delta,
@@ -69,8 +69,8 @@ func TestMemStorage_UpdateCounterAccumulate(t *testing.T) {
 
 	d1 := int64(5)
 	d2 := int64(3)
-	stor.Update(&models.Metrics{ID: "C", MType: "counter", Delta: &d1})
-	stor.Update(&models.Metrics{ID: "C", MType: "counter", Delta: &d2})
+	stor.Update(&model.Metrics{ID: "C", MType: "counter", Delta: &d1})
+	stor.Update(&model.Metrics{ID: "C", MType: "counter", Delta: &d2})
 
 	m, _ := stor.GetMetric("C", "counter")
 	if *m.Delta != 8 {

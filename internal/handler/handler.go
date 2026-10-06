@@ -38,17 +38,17 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if metricType != models.Gauge && metricType != models.Counter {
+	if metricType != model.Gauge && metricType != model.Counter {
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 		return
 	}
 
-	metric := &models.Metrics{
+	metric := &model.Metrics{
 		ID:    metricID,
 		MType: metricType,
 	}
 
-	if metricType == models.Gauge {
+	if metricType == model.Gauge {
 		value, err := strconv.ParseFloat(metricValueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid metric value", http.StatusBadRequest)
