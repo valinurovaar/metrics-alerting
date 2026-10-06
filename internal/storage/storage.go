@@ -40,9 +40,6 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 		if metric.MType == model.Gauge && metric.Value != nil {
 			existing.Value = metric.Value
 		}
-		if metric.Hash != "" {
-			existing.Hash = metric.Hash
-		}
 	} else {
 		s.metrics[key] = metric
 	}
