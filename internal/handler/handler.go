@@ -36,6 +36,7 @@ func NewMetricsServer(s storage.Storage, logger *zap.Logger) *MetricsServer {
 func (s *MetricsServer) Routes() chi.Router {
 	r := chi.NewRouter()
 
+	r.Use(GzipMiddleware)
 	r.Use(LoggingMiddleware(s.logger))
 
 	r.Post("/update/{type}/{name}/{value}", s.UpdateHandler)
