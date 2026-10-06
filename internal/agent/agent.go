@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,8 +39,10 @@ func New(serverURL string) *Agent {
 	}
 
 	return &Agent{
-		serverURL:      serverURL,
-		client:         &http.Client{},
+		serverURL: serverURL,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 		gauges:         make(map[string]float64),
 		counters:       make(map[string]int64),
 		reportInterval: ReportInterval,
@@ -47,17 +50,31 @@ func New(serverURL string) *Agent {
 	}
 }
 
-func (a *Agent) Run() {
+func (a *Agent) Run(ctx context.Context) {
+	pollTicker := time.NewTicker(a.pollInterval)
+	defer pollTicker.Stop()
+
+	reportTicker := time.NewTicker(a.reportInterval)
+	defer reportTicker.Stop()
+
 	go func() {
 		for {
-			a.Poll()
-			time.Sleep(a.pollInterval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-pollTicker.C:
+				a.Poll()
+			}
 		}
 	}()
 
 	for {
-		a.Report()
-		time.Sleep(a.reportInterval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-reportTicker.C:
+			a.Report(ctx)
+		}
 	}
 }
 
@@ -100,7 +117,7 @@ func (a *Agent) Poll() {
 	a.gauges["RandomValue"] = rand.Float64()
 }
 
-func (a *Agent) Report() {
+func (a *Agent) Report(ctx context.Context) {
 	a.mu.Lock()
 
 	gaugesCopy := make(map[string]float64, len(a.gauges))
@@ -119,8 +136,14 @@ func (a *Agent) Report() {
 	a.mu.Unlock()
 
 	for name, value := range gaugesCopy {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		v := value
-		a.sendMetric(model.Metrics{
+		a.sendMetric(ctx, model.Metrics{
 			ID:    name,
 			MType: "gauge",
 			Value: &v,
@@ -128,11 +151,17 @@ func (a *Agent) Report() {
 	}
 
 	for name, value := range countersCopy {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		if value == 0 {
 			continue
 		}
 		v := value
-		a.sendMetric(model.Metrics{
+		a.sendMetric(ctx, model.Metrics{
 			ID:    name,
 			MType: "counter",
 			Delta: &v,
@@ -141,14 +170,18 @@ func (a *Agent) Report() {
 }
 
 func (a *Agent) SetReportInterval(interval time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.reportInterval = interval
 }
 
 func (a *Agent) SetPollInterval(interval time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.pollInterval = interval
 }
 
-func (a *Agent) sendMetric(metric model.Metrics) {
+func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
 	body, err := json.Marshal(metric)
 	if err != nil {
 		fmt.Printf("marshal error: %v\n", err)
@@ -170,7 +203,8 @@ func (a *Agent) sendMetric(metric model.Metrics) {
 
 	endpoint := strings.TrimRight(a.serverURL, "/") + "/update"
 
-	req, err := http.NewRequest(
+	req, err := http.NewRequestWithContext(
+		ctx,
 		http.MethodPost,
 		endpoint,
 		&buf,
@@ -186,6 +220,9 @@ func (a *Agent) sendMetric(metric model.Metrics) {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		fmt.Printf("send request error: %v\n", err)
 		return
 	}

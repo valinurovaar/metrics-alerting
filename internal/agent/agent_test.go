@@ -2,6 +2,7 @@ package agent
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -58,7 +59,10 @@ func TestReport_SendsMetrics(t *testing.T) {
 	a.SetPollInterval(50 * time.Millisecond)
 	a.SetReportInterval(100 * time.Millisecond)
 
-	go a.Run()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go a.Run(ctx)
 
 	deadline := time.After(3 * time.Second)
 	expectedCount := 5
