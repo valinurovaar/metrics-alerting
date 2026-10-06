@@ -15,8 +15,8 @@ import (
 
 type Storage interface {
 	Update(metric *model.Metrics) error
-	GetMetric(id string, mType string) (*model.Metrics, bool)
-	GetAllMetrics() map[string]*model.Metrics
+	GetMetric(id string, mType string) (*model.Metrics, bool, error)
+	GetAllMetrics() (map[string]*model.Metrics, error)
 }
 
 type PersistenceConfig struct {
@@ -84,16 +84,8 @@ func NewPersistentMemStorage(cfg PersistenceConfig) (*MemStorage, error) {
 }
 
 func (s *MemStorage) Update(metric *model.Metrics) error {
-	if metric == nil {
-		return errors.New("metric is nil")
-	}
-
-	if metric.ID == "" {
-		return errors.New("metric id is required")
-	}
-
-	if metric.MType != "gauge" && metric.MType != "counter" {
-		return errors.New("invalid metric type")
+	if err := validateMetric(metric); err != nil {
+		return err
 	}
 
 	key := metricKey(metric.MType, metric.ID)
@@ -118,7 +110,7 @@ func (s *MemStorage) Update(metric *model.Metrics) error {
 	return nil
 }
 
-func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool) {
+func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -126,13 +118,13 @@ func (s *MemStorage) GetMetric(id string, mType string) (*model.Metrics, bool) {
 
 	metric, ok := s.metrics[key]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 
-	return copyMetric(metric), true
+	return copyMetric(metric), true, nil
 }
 
-func (s *MemStorage) GetAllMetrics() map[string]*model.Metrics {
+func (s *MemStorage) GetAllMetrics() (map[string]*model.Metrics, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -142,7 +134,7 @@ func (s *MemStorage) GetAllMetrics() map[string]*model.Metrics {
 		result[k] = copyMetric(v)
 	}
 
-	return result
+	return result, nil
 }
 
 func (s *MemStorage) Save() error {
@@ -345,4 +337,17 @@ func copyMetric(m *model.Metrics) *model.Metrics {
 	}
 
 	return &cp
+}
+
+func validateMetric(metric *model.Metrics) error {
+	if metric == nil {
+		return errors.New("metric is nil")
+	}
+	if metric.ID == "" {
+		return errors.New("metric id is required")
+	}
+	if metric.MType != model.Gauge && metric.MType != model.Counter {
+		return errors.New("invalid metric type")
+	}
+	return nil
 }

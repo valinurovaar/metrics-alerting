@@ -17,6 +17,7 @@ import (
 
 	"metrics-alerting/internal/handler"
 	"metrics-alerting/internal/storage"
+	"metrics-alerting/migrations"
 )
 
 func main() {
@@ -30,7 +31,7 @@ func main() {
 
 	fileStoragePath := flag.String(
 		"f",
-		"metrics.json",
+		"",
 		"File storage path",
 	)
 
@@ -79,23 +80,38 @@ func main() {
 		*databaseDSN = envDatabaseDSN
 	}
 
-	var database *sql.DB
+	var (
+		database *sql.DB
+		stor     storage.Storage
+		memStore *storage.MemStorage
+	)
+
 	if *databaseDSN != "" {
 		var err error
 		database, err = sql.Open("postgres", *databaseDSN)
 		if err != nil {
 			log.Fatalf("cannot initialize database connection: %v", err)
 		}
-		defer database.Close()
-	}
 
-	stor, err := storage.NewPersistentMemStorage(storage.PersistenceConfig{
-		FilePath:      *fileStoragePath,
-		Restore:       *restore,
-		StoreInterval: time.Duration(*storeInterval) * time.Second,
-	})
-	if err != nil {
-		log.Fatalf("cannot initialize storage: %v", err)
+		if err := migrations.Up(*databaseDSN); err != nil {
+			log.Printf("cannot apply database migrations: %v", err)
+		}
+
+		stor = storage.NewPostgresStorage(database)
+	} else if *fileStoragePath != "" {
+		var err error
+		memStore, err = storage.NewPersistentMemStorage(storage.PersistenceConfig{
+			FilePath:      *fileStoragePath,
+			Restore:       *restore,
+			StoreInterval: time.Duration(*storeInterval) * time.Second,
+		})
+		if err != nil {
+			log.Fatalf("cannot initialize file storage: %v", err)
+		}
+		stor = memStore
+	} else {
+		memStore = storage.NewMemStorage()
+		stor = memStore
 	}
 
 	logger, err := zap.NewProduction()
@@ -137,7 +153,14 @@ func main() {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 
-	stor.Close()
+	if memStore != nil {
+		memStore.Close()
+	}
+	if database != nil {
+		if err := database.Close(); err != nil {
+			log.Printf("cannot close database connection: %v", err)
+		}
+	}
 
 	log.Println("Server exited properly")
 }

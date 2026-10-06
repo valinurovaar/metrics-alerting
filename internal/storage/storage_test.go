@@ -19,7 +19,10 @@ func TestMemStorage_UpdateGauge(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	m, ok := stor.GetMetric("TestGauge", "gauge")
+	m, ok, err := stor.GetMetric("TestGauge", "gauge")
+	if err != nil {
+		t.Fatalf("GetMetric failed: %v", err)
+	}
 	if !ok {
 		t.Fatal("Metric not found")
 	}
@@ -36,7 +39,7 @@ func TestMemStorage_UpdateGaugeOverwrite(t *testing.T) {
 	stor.Update(&model.Metrics{ID: "G", MType: "gauge", Value: &v1})
 	stor.Update(&model.Metrics{ID: "G", MType: "gauge", Value: &v2})
 
-	m, _ := stor.GetMetric("G", "gauge")
+	m, _, _ := stor.GetMetric("G", "gauge")
 	if *m.Value != 20.0 {
 		t.Errorf("Expected gauge to be overwritten to 20.0, got %f", *m.Value)
 	}
@@ -55,7 +58,10 @@ func TestMemStorage_UpdateCounter(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	m, ok := stor.GetMetric("TestCounter", "counter")
+	m, ok, err := stor.GetMetric("TestCounter", "counter")
+	if err != nil {
+		t.Fatalf("GetMetric failed: %v", err)
+	}
 	if !ok {
 		t.Fatal("Metric not found")
 	}
@@ -72,7 +78,7 @@ func TestMemStorage_UpdateCounterAccumulate(t *testing.T) {
 	stor.Update(&model.Metrics{ID: "C", MType: "counter", Delta: &d1})
 	stor.Update(&model.Metrics{ID: "C", MType: "counter", Delta: &d2})
 
-	m, _ := stor.GetMetric("C", "counter")
+	m, _, _ := stor.GetMetric("C", "counter")
 	if *m.Delta != 8 {
 		t.Errorf("Expected accumulated counter 8, got %d", *m.Delta)
 	}
