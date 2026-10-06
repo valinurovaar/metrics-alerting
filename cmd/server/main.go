@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"go.uber.org/zap"
 
 	"metrics-alerting/internal/handler"
 	"metrics-alerting/internal/storage"
@@ -19,7 +20,14 @@ func main() {
 	}
 
 	stor := storage.NewMemStorage()
-	metricsServer := handler.NewMetricsServer(stor)
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("cannot initialize logger: %v", err)
+	}
+	defer logger.Sync()
+
+	metricsServer := handler.NewMetricsServer(stor, logger)
 
 	log.Printf("Starting metrics server on %s", *addr)
 	if err := http.ListenAndServe(*addr, metricsServer.Routes()); err != nil {

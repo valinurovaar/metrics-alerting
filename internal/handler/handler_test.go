@@ -6,13 +6,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"go.uber.org/zap"
 
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/storage"
 )
 
 func setupTestServer(stor storage.Storage) http.Handler {
-	return NewMetricsServer(stor).Routes()
+	logger, _ := zap.NewDevelopment()
+	return NewMetricsServer(stor, logger).Routes()
 }
 
 func TestUpdateHandler_GaugeSuccess(t *testing.T) {
