@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 
 	"metrics-alerting/internal/handler"
@@ -37,6 +39,7 @@ func main() {
 		false,
 		"Restore saved metrics from file on start",
 	)
+	databaseDSN := flag.String("d", "", "PostgreSQL database connection string")
 
 	flag.Parse()
 
@@ -72,6 +75,20 @@ func main() {
 		}
 	}
 
+	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
+		*databaseDSN = envDatabaseDSN
+	}
+
+	var database *sql.DB
+	if *databaseDSN != "" {
+		var err error
+		database, err = sql.Open("postgres", *databaseDSN)
+		if err != nil {
+			log.Fatalf("cannot initialize database connection: %v", err)
+		}
+		defer database.Close()
+	}
+
 	stor, err := storage.NewPersistentMemStorage(storage.PersistenceConfig{
 		FilePath:      *fileStoragePath,
 		Restore:       *restore,
@@ -88,6 +105,9 @@ func main() {
 	defer logger.Sync()
 
 	metricsServer := handler.NewMetricsServer(stor, logger)
+	if database != nil {
+		metricsServer = handler.NewMetricsServer(stor, logger, database)
+	}
 
 	srv := &http.Server{
 		Addr:         *addr,

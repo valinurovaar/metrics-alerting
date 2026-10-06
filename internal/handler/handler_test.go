@@ -1,16 +1,27 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
 	"go.uber.org/zap"
 
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/storage"
 )
+
+type databaseStub struct {
+	err error
+}
+
+func (d databaseStub) PingContext(context.Context) error {
+	return d.err
+}
 
 func setupTestServer(stor storage.Storage) http.Handler {
 	logger, _ := zap.NewDevelopment()
@@ -209,5 +220,44 @@ func TestListHandler_Success(t *testing.T) {
 	}
 	if !strings.Contains(html, "MyCounter") || !strings.Contains(html, "7") {
 		t.Errorf("Expected HTML to contain counter metric, got %q", html)
+	}
+}
+
+func TestPingHandler(t *testing.T) {
+	tests := []struct {
+		name       string
+		database   []DatabasePinger
+		wantStatus int
+	}{
+		{
+			name:       "database is available",
+			database:   []DatabasePinger{databaseStub{}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "database ping fails",
+			database:   []DatabasePinger{databaseStub{err: errors.New("connection failed")}},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "database is not configured",
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stor := storage.NewMemStorage()
+			logger := zap.NewNop()
+			server := NewMetricsServer(stor, logger, tt.database...).Routes()
+
+			req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+			w := httptest.NewRecorder()
+			server.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }
