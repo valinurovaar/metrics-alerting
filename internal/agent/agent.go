@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"runtime"
@@ -36,7 +37,6 @@ type Agent struct {
 	pollInterval   time.Duration
 	rateLimit      int
 	mu             sync.Mutex
-	reportMu       sync.Mutex
 	retryPolicy    retry.Policy
 	key            string
 }
@@ -65,7 +65,7 @@ func (a *Agent) Run(ctx context.Context) {
 	pollInterval, reportInterval, rateLimit := a.pollInterval, a.reportInterval, a.rateLimit
 	a.mu.Unlock()
 
-	jobs := make(chan reportJob, rateLimit*2)
+	jobs := make(chan reportJob, rateLimit)
 	var wg sync.WaitGroup
 	for i := 0; i < rateLimit; i++ {
 		wg.Add(1)
@@ -104,9 +104,7 @@ func (a *Agent) Run(ctx context.Context) {
 }
 
 type reportJob struct {
-	metric       model.Metrics
-	counterName  string
-	counterDelta int64
+	metrics []model.Metrics
 }
 
 func (a *Agent) collectRuntime(ctx context.Context, interval time.Duration) {
@@ -131,7 +129,7 @@ func (a *Agent) collectSystem(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			if err := a.PollSystem(); err != nil {
-				fmt.Printf("collect system metrics error: %v\n", err)
+				log.Printf("collect system metrics error: %v", err)
 			}
 		}
 	}
@@ -139,56 +137,56 @@ func (a *Agent) collectSystem(ctx context.Context, interval time.Duration) {
 
 func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- reportJob) bool {
 	a.mu.Lock()
-	report := make([]reportJob, 0, len(a.gauges)+len(a.counters))
+	job := reportJob{metrics: make([]model.Metrics, 0, len(a.gauges)+len(a.counters))}
 	for name, gauge := range a.gauges {
 		value := gauge
-		report = append(report, reportJob{metric: model.Metrics{ID: name, MType: model.Gauge, Value: &value}})
+		job.metrics = append(job.metrics, model.Metrics{ID: name, MType: model.Gauge, Value: &value})
 	}
 	for name, counter := range a.counters {
 		if counter == 0 {
 			continue
 		}
 		delta := counter
-		report = append(report, reportJob{
-			metric:       model.Metrics{ID: name, MType: model.Counter, Delta: &delta},
-			counterName:  name,
-			counterDelta: delta,
-		})
+		job.metrics = append(job.metrics, model.Metrics{ID: name, MType: model.Counter, Delta: &delta})
 		a.counters[name] -= delta
 	}
 	a.mu.Unlock()
 
-	for i, job := range report {
-		select {
-		case jobs <- job:
-		case <-ctx.Done():
-			for _, unsent := range report[i:] {
-				a.restoreCounter(unsent)
-			}
-			return false
-		}
+	if ctx.Err() != nil {
+		a.restoreCounter(job)
+		return false
 	}
-	return true
+	if len(job.metrics) == 0 {
+		return true
+	}
+	select {
+	case jobs <- job:
+		return true
+	case <-ctx.Done():
+		a.restoreCounter(job)
+		return false
+	}
 }
 
 func (a *Agent) reportWorker(ctx context.Context, jobs <-chan reportJob) {
 	for job := range jobs {
-		if err := a.sendPayload(ctx, "/updates/", []model.Metrics{job.metric}); err != nil {
+		if err := a.sendPayload(ctx, "/updates/", job.metrics); err != nil {
 			a.restoreCounter(job)
 			if ctx.Err() == nil {
-				fmt.Printf("send metric %s error: %v\n", job.metric.ID, err)
+				log.Printf("send batch error: %v", err)
 			}
 		}
 	}
 }
 
 func (a *Agent) restoreCounter(job reportJob) {
-	if job.counterName == "" {
-		return
-	}
 	a.mu.Lock()
-	a.counters[job.counterName] += job.counterDelta
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	for _, metric := range job.metrics {
+		if metric.MType == model.Counter && metric.Delta != nil {
+			a.counters[metric.ID] += *metric.Delta
+		}
+	}
 }
 
 func (a *Agent) Poll() {
@@ -251,41 +249,6 @@ func (a *Agent) PollSystem() error {
 	return nil
 }
 
-func (a *Agent) Report(ctx context.Context) {
-	a.reportMu.Lock()
-	defer a.reportMu.Unlock()
-	a.mu.Lock()
-	metrics := make([]model.Metrics, 0, len(a.gauges)+len(a.counters))
-	for k, v := range a.gauges {
-		value := v
-		metrics = append(metrics, model.Metrics{ID: k, MType: model.Gauge, Value: &value})
-	}
-
-	countersCopy := make(map[string]int64, len(a.counters))
-	for k, v := range a.counters {
-		if v != 0 {
-			countersCopy[k] = v
-			delta := v
-			metrics = append(metrics, model.Metrics{ID: k, MType: model.Counter, Delta: &delta})
-		}
-	}
-
-	a.mu.Unlock()
-
-	if len(metrics) == 0 || ctx.Err() != nil {
-		return
-	}
-	if err := a.sendPayload(ctx, "/updates/", metrics); err != nil {
-		fmt.Printf("send batch error: %v\n", err)
-		return
-	}
-	a.mu.Lock()
-	for name, delta := range countersCopy {
-		a.counters[name] -= delta
-	}
-	a.mu.Unlock()
-}
-
 func (a *Agent) SetReportInterval(interval time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -311,12 +274,6 @@ func (a *Agent) SetKey(key string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.key = key
-}
-
-func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
-	if err := a.sendPayload(ctx, "/update", metric); err != nil {
-		fmt.Printf("send metric error: %v\n", err)
-	}
 }
 
 func (a *Agent) sendPayload(ctx context.Context, path string, payload any) error {
