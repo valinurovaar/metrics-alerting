@@ -42,6 +42,7 @@ func main() {
 		"Restore saved metrics from file on start",
 	)
 	databaseDSN := flag.String("d", "", "PostgreSQL database connection string")
+	key := flag.String("k", "", "Key for signing request and response bodies")
 
 	flag.Parse()
 
@@ -79,6 +80,9 @@ func main() {
 
 	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
 		*databaseDSN = envDatabaseDSN
+	}
+	if envKey := os.Getenv("KEY"); envKey != "" {
+		*key = envKey
 	}
 
 	var (
@@ -125,6 +129,7 @@ func main() {
 	if database != nil {
 		metricsServer = handler.NewMetricsServer(stor, logger, database)
 	}
+	metricsServer.SetKey(*key)
 	requestContext, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
 

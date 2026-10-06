@@ -16,6 +16,7 @@ import (
 
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/retry"
+	"metrics-alerting/internal/signature"
 )
 
 const (
@@ -33,6 +34,7 @@ type Agent struct {
 	mu             sync.Mutex
 	reportMu       sync.Mutex
 	retryPolicy    retry.Policy
+	key            string
 }
 
 func New(serverURL string) *Agent {
@@ -170,6 +172,12 @@ func (a *Agent) SetPollInterval(interval time.Duration) {
 	a.pollInterval = interval
 }
 
+func (a *Agent) SetKey(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.key = key
+}
+
 func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
 	if err := a.sendPayload(ctx, "/update", metric); err != nil {
 		fmt.Printf("send metric error: %v\n", err)
@@ -214,6 +222,12 @@ func (a *Agent) sendRequest(ctx context.Context, endpoint string, compressed []b
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	a.mu.Lock()
+	key := a.key
+	a.mu.Unlock()
+	if key != "" {
+		req.Header.Set(signature.Header, signature.Calculate(compressed, key))
+	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {

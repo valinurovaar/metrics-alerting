@@ -12,7 +12,29 @@ import (
 	"time"
 
 	"metrics-alerting/internal/model"
+	"metrics-alerting/internal/signature"
 )
+
+func TestSendRequestSignsBody(t *testing.T) {
+	const key = "secret"
+	body := []byte("compressed request body")
+	var receivedHash string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHash = r.Header.Get(signature.Header)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := New(srv.URL)
+	a.SetKey(key)
+	if err := a.sendRequest(context.Background(), srv.URL, body); err != nil {
+		t.Fatal(err)
+	}
+	if want := signature.Calculate(body, key); receivedHash != want {
+		t.Fatalf("request signature = %q, want %q", receivedHash, want)
+	}
+}
 
 func TestReport_SendsMetrics(t *testing.T) {
 	receivedMetrics := make(chan model.Metrics, 100)

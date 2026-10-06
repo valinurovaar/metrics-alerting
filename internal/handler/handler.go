@@ -21,6 +21,7 @@ type MetricsServer struct {
 	storage  storage.Storage
 	logger   *zap.Logger
 	database DatabasePinger
+	key      string
 }
 
 type DatabasePinger interface {
@@ -48,6 +49,7 @@ func NewMetricsServer(s storage.Storage, logger *zap.Logger, database ...Databas
 func (s *MetricsServer) Routes() chi.Router {
 	r := chi.NewRouter()
 
+	r.Use(HashMiddleware(s.key))
 	r.Use(GzipMiddleware)
 	r.Use(LoggingMiddleware(s.logger))
 
@@ -67,6 +69,10 @@ func (s *MetricsServer) Routes() chi.Router {
 	r.Get("/", s.ListHandler)
 
 	return r
+}
+
+func (s *MetricsServer) SetKey(key string) {
+	s.key = key
 }
 
 func (s *MetricsServer) UpdateBatchHandler(w http.ResponseWriter, r *http.Request) {
