@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -94,7 +95,7 @@ func main() {
 		}
 
 		if err := migrations.Up(*databaseDSN); err != nil {
-			log.Printf("cannot apply database migrations: %v", err)
+			log.Fatalf("cannot apply database migrations: %v", err)
 		}
 
 		stor = storage.NewPostgresStorage(database)
@@ -124,10 +125,15 @@ func main() {
 	if database != nil {
 		metricsServer = handler.NewMetricsServer(stor, logger, database)
 	}
+	requestContext, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
 
 	srv := &http.Server{
-		Addr:         *addr,
-		Handler:      metricsServer.Routes(),
+		Addr:    *addr,
+		Handler: metricsServer.Routes(),
+		BaseContext: func(net.Listener) context.Context {
+			return requestContext
+		},
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -145,11 +151,12 @@ func main() {
 
 	<-quit
 	log.Println("Shutting down server...")
+	cancelRequests()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownContext); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
 

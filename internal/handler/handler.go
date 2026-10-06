@@ -1,13 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -93,7 +93,7 @@ func (s *MetricsServer) UpdateBatchHandler(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if err := s.storage.UpdateBatch(metrics); err != nil {
+	if err := s.storage.UpdateBatch(r.Context(), metrics); err != nil {
 		s.logger.Error("failed to update metrics batch", zap.Error(err))
 		http.Error(w, "failed to update metrics", http.StatusInternalServerError)
 		return
@@ -157,7 +157,7 @@ func (s *MetricsServer) UpdateHandler(w http.ResponseWriter, r *http.Request) {
 		metric.Delta = &delta
 	}
 
-	if err := s.storage.Update(metric); err != nil {
+	if err := s.storage.Update(r.Context(), metric); err != nil {
 		http.Error(w, "Failed to update metric", http.StatusInternalServerError)
 		return
 	}
@@ -195,7 +195,7 @@ func (s *MetricsServer) UpdateJSONHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.storage.Update(&metric); err != nil {
+	if err := s.storage.Update(r.Context(), &metric); err != nil {
 		http.Error(w, "failed to update metric", http.StatusInternalServerError)
 		return
 	}
@@ -216,7 +216,7 @@ func (s *MetricsServer) GetValueHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	metric, ok, err := s.storage.GetMetric(metricID, metricType)
+	metric, ok, err := s.storage.GetMetric(r.Context(), metricID, metricType)
 	if err != nil {
 		s.logger.Error("failed to get metric", zap.Error(err))
 		http.Error(w, "failed to get metric", http.StatusInternalServerError)
@@ -265,7 +265,7 @@ func (s *MetricsServer) PostValueJSONHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	metric, ok, err := s.storage.GetMetric(req.ID, req.MType)
+	metric, ok, err := s.storage.GetMetric(r.Context(), req.ID, req.MType)
 	if err != nil {
 		s.logger.Error("failed to get metric", zap.Error(err))
 		http.Error(w, "failed to get metric", http.StatusInternalServerError)
@@ -284,18 +284,14 @@ func (s *MetricsServer) PostValueJSONHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {
-	metrics, err := s.storage.GetAllMetrics()
+	metrics, err := s.storage.GetAllMetrics(r.Context())
 	if err != nil {
 		s.logger.Error("failed to list metrics", zap.Error(err))
 		http.Error(w, "failed to list metrics", http.StatusInternalServerError)
 		return
 	}
 
-	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html><head><title>Metrics</title></head><body>\n")
-	b.WriteString("<h1>Metrics</h1>\n<table border=\"1\">\n")
-	b.WriteString("<tr><th>Type</th><th>Name</th><th>Value</th></tr>\n")
-
+	rows := make([]metricRow, 0, len(metrics))
 	for _, m := range metrics {
 		var valueStr string
 		if m.MType == "gauge" && m.Value != nil {
@@ -303,15 +299,35 @@ func (s *MetricsServer) ListHandler(w http.ResponseWriter, r *http.Request) {
 		} else if m.MType == "counter" && m.Delta != nil {
 			valueStr = strconv.FormatInt(*m.Delta, 10)
 		}
-		fmt.Fprintf(&b, "<tr><td>%s</td><td>%s</td><td>%s</td></tr>\n", m.MType, m.ID, valueStr)
+		rows = append(rows, metricRow{Type: m.MType, Name: m.ID, Value: valueStr})
 	}
-
-	b.WriteString("</table>\n</body></html>\n")
+	var body bytes.Buffer
+	if err := metricsListTemplate.Execute(&body, rows); err != nil {
+		s.logger.Error("failed to render metrics list", zap.Error(err))
+		http.Error(w, "failed to render metrics", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(b.String()))
+	_, _ = w.Write(body.Bytes())
 }
+
+type metricRow struct {
+	Type  string
+	Name  string
+	Value string
+}
+
+var metricsListTemplate = template.Must(template.New("metrics-list").Parse(`<!DOCTYPE html>
+<html><head><title>Metrics</title></head><body>
+<h1>Metrics</h1>
+<table border="1">
+<tr><th>Type</th><th>Name</th><th>Value</th></tr>
+{{range .}}<tr><td>{{.Type}}</td><td>{{.Name}}</td><td>{{.Value}}</td></tr>
+{{end}}</table>
+</body></html>
+`))
 
 func LoggingMiddleware(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
