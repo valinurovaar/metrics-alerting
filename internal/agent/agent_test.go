@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,4 +179,85 @@ func TestAgent_Intervals(t *testing.T) {
 	if a.pollInterval != 5*time.Second {
 		t.Errorf("expected pollInterval=5s, got %v", a.pollInterval)
 	}
+}
+
+func TestPollSystem(t *testing.T) {
+	a := New("localhost:8080")
+	if err := a.PollSystem(); err != nil {
+		t.Fatal(err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.gauges["TotalMemory"]; !ok {
+		t.Error("TotalMemory was not collected")
+	}
+	if _, ok := a.gauges["FreeMemory"]; !ok {
+		t.Error("FreeMemory was not collected")
+	}
+	for i := 1; i <= runtime.NumCPU(); i++ {
+		if _, ok := a.gauges["CPUutilization"+strconv.Itoa(i)]; !ok {
+			t.Errorf("CPUutilization%d was not collected", i)
+		}
+	}
+}
+
+func TestRunRespectsRateLimit(t *testing.T) {
+	const limit = 2
+	var active atomic.Int32
+	var maximum atomic.Int32
+	release := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			old := maximum.Load()
+			if current <= old || maximum.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := New(srv.URL)
+	a.SetRateLimit(limit)
+	a.SetPollInterval(time.Hour)
+	a.SetReportInterval(10 * time.Millisecond)
+	for i := 0; i < limit+3; i++ {
+		a.gauges["test"+strconv.Itoa(i)] = float64(i)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for maximum.Load() < limit {
+		select {
+		case <-deadline.C:
+			close(release)
+			cancel()
+			<-done
+			t.Fatalf("maximum concurrency = %d, want %d", maximum.Load(), limit)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if got := maximum.Load(); got > limit {
+		t.Errorf("maximum concurrency = %d, exceeds rate limit %d", got, limit)
+	}
+
+	close(release)
+	cancel()
+	<-done
 }

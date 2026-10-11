@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"runtime"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
 	"metrics-alerting/internal/model"
 	"metrics-alerting/internal/retry"
 	"metrics-alerting/internal/signature"
@@ -22,6 +25,7 @@ import (
 const (
 	PollInterval   = 2 * time.Second
 	ReportInterval = 10 * time.Second
+	RateLimit      = 3
 )
 
 type Agent struct {
@@ -31,8 +35,8 @@ type Agent struct {
 	counters       map[string]int64
 	reportInterval time.Duration
 	pollInterval   time.Duration
+	rateLimit      int
 	mu             sync.Mutex
-	reportMu       sync.Mutex
 	retryPolicy    retry.Policy
 	key            string
 }
@@ -52,36 +56,135 @@ func New(serverURL string) *Agent {
 		counters:       make(map[string]int64),
 		reportInterval: ReportInterval,
 		pollInterval:   PollInterval,
+		rateLimit:      RateLimit,
 	}
 }
 
 func (a *Agent) Run(ctx context.Context) {
 	a.mu.Lock()
-	pollInterval, reportInterval := a.pollInterval, a.reportInterval
+	pollInterval, reportInterval, rateLimit := a.pollInterval, a.reportInterval, a.rateLimit
 	a.mu.Unlock()
-	pollTicker := time.NewTicker(pollInterval)
-	defer pollTicker.Stop()
+
+	jobs := make(chan reportJob, rateLimit)
+	var wg sync.WaitGroup
+	for i := 0; i < rateLimit; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.reportWorker(ctx, jobs)
+		}()
+	}
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		a.collectRuntime(ctx, pollInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		a.collectSystem(ctx, pollInterval)
+	}()
 
 	reportTicker := time.NewTicker(reportInterval)
 	defer reportTicker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-pollTicker.C:
-				a.Poll()
-			}
-		}
-	}()
+	defer wg.Wait()
 
 	for {
 		select {
 		case <-ctx.Done():
+			close(jobs)
 			return
 		case <-reportTicker.C:
-			a.Report(ctx)
+			if !a.enqueueReport(ctx, jobs) {
+				close(jobs)
+				return
+			}
+		}
+	}
+}
+
+type reportJob struct {
+	metrics []model.Metrics
+}
+
+func (a *Agent) collectRuntime(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.Poll()
+		}
+	}
+}
+
+func (a *Agent) collectSystem(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.PollSystem(); err != nil {
+				log.Printf("collect system metrics error: %v", err)
+			}
+		}
+	}
+}
+
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- reportJob) bool {
+	a.mu.Lock()
+	job := reportJob{metrics: make([]model.Metrics, 0, len(a.gauges)+len(a.counters))}
+	for name, gauge := range a.gauges {
+		value := gauge
+		job.metrics = append(job.metrics, model.Metrics{ID: name, MType: model.Gauge, Value: &value})
+	}
+	for name, counter := range a.counters {
+		if counter == 0 {
+			continue
+		}
+		delta := counter
+		job.metrics = append(job.metrics, model.Metrics{ID: name, MType: model.Counter, Delta: &delta})
+		a.counters[name] -= delta
+	}
+	a.mu.Unlock()
+
+	if ctx.Err() != nil {
+		a.restoreCounter(job)
+		return false
+	}
+	if len(job.metrics) == 0 {
+		return true
+	}
+	select {
+	case jobs <- job:
+		return true
+	case <-ctx.Done():
+		a.restoreCounter(job)
+		return false
+	}
+}
+
+func (a *Agent) reportWorker(ctx context.Context, jobs <-chan reportJob) {
+	for job := range jobs {
+		if err := a.sendPayload(ctx, "/updates/", job.metrics); err != nil {
+			a.restoreCounter(job)
+			if ctx.Err() == nil {
+				log.Printf("send batch error: %v", err)
+			}
+		}
+	}
+}
+
+func (a *Agent) restoreCounter(job reportJob) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, metric := range job.metrics {
+		if metric.MType == model.Counter && metric.Delta != nil {
+			a.counters[metric.ID] += *metric.Delta
 		}
 	}
 }
@@ -125,39 +228,25 @@ func (a *Agent) Poll() {
 	a.gauges["RandomValue"] = rand.Float64()
 }
 
-func (a *Agent) Report(ctx context.Context) {
-	a.reportMu.Lock()
-	defer a.reportMu.Unlock()
+// PollSystem collects host metrics independently from Go runtime metrics.
+func (a *Agent) PollSystem() error {
+	memory, err := mem.VirtualMemory()
+	if err != nil {
+		return fmt.Errorf("read virtual memory: %w", err)
+	}
+	utilization, err := cpu.Percent(0, true)
+	if err != nil {
+		return fmt.Errorf("read cpu utilization: %w", err)
+	}
+
 	a.mu.Lock()
-	metrics := make([]model.Metrics, 0, len(a.gauges)+len(a.counters))
-	for k, v := range a.gauges {
-		value := v
-		metrics = append(metrics, model.Metrics{ID: k, MType: model.Gauge, Value: &value})
+	defer a.mu.Unlock()
+	a.gauges["TotalMemory"] = float64(memory.Total)
+	a.gauges["FreeMemory"] = float64(memory.Free)
+	for i, value := range utilization {
+		a.gauges[fmt.Sprintf("CPUutilization%d", i+1)] = value
 	}
-
-	countersCopy := make(map[string]int64, len(a.counters))
-	for k, v := range a.counters {
-		if v != 0 {
-			countersCopy[k] = v
-			delta := v
-			metrics = append(metrics, model.Metrics{ID: k, MType: model.Counter, Delta: &delta})
-		}
-	}
-
-	a.mu.Unlock()
-
-	if len(metrics) == 0 || ctx.Err() != nil {
-		return
-	}
-	if err := a.sendPayload(ctx, "/updates/", metrics); err != nil {
-		fmt.Printf("send batch error: %v\n", err)
-		return
-	}
-	a.mu.Lock()
-	for name, delta := range countersCopy {
-		a.counters[name] -= delta
-	}
-	a.mu.Unlock()
+	return nil
 }
 
 func (a *Agent) SetReportInterval(interval time.Duration) {
@@ -172,16 +261,19 @@ func (a *Agent) SetPollInterval(interval time.Duration) {
 	a.pollInterval = interval
 }
 
+func (a *Agent) SetRateLimit(limit int) {
+	if limit <= 0 {
+		limit = 1
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rateLimit = limit
+}
+
 func (a *Agent) SetKey(key string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.key = key
-}
-
-func (a *Agent) sendMetric(ctx context.Context, metric model.Metrics) {
-	if err := a.sendPayload(ctx, "/update", metric); err != nil {
-		fmt.Printf("send metric error: %v\n", err)
-	}
 }
 
 func (a *Agent) sendPayload(ctx context.Context, path string, payload any) error {
